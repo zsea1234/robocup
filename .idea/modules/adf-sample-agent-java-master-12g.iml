@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module external.linked.project.id="adf-sample-agent-java-master-12g" external.linked.project.path="$MODULE_DIR$/../../adf-sample-agent-java-master-32g" external.root.project.path="$MODULE_DIR$/../../adf-sample-agent-java-master-32g" external.system.id="GRADLE" external.system.module.group="com.github.robzorescue" external.system.module.version="4.0" type="JAVA_MODULE" version="4">
+  <component name="NewModuleRootManager" LANGUAGE_LEVEL="JDK_17" inherit-compiler-output="true">
+    <exclude-output />
+    <content url="file://$MODULE_DIR$/../../adf-sample-agent-java-master-32g">
+      <excludeFolder url="file://$MODULE_DIR$/../../adf-sample-agent-java-master-32g/.gradle" />
+      <excludeFolder url="file://$MODULE_DIR$/../../adf-sample-agent-java-master-32g/build" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

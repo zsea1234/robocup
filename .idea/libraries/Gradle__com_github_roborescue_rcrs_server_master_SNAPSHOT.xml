@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: com.github.roborescue:rcrs-server:master-SNAPSHOT" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="com.github.roborescue" artifactId="rcrs-server" version="master-SNAPSHOT" />
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/com.github.roborescue/rcrs-server/master-SNAPSHOT/78afa4ba848c139e031712e38b14fcb937ff0e25/rcrs-server-master-SNAPSHOT.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

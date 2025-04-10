@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: relaxngDatatype:relaxngDatatype:20020414" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="relaxngDatatype" artifactId="relaxngDatatype" version="20020414" />
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/relaxngDatatype/relaxngDatatype/20020414/de7952cecd05b65e0e4370cc93fc03035175eef5/relaxngDatatype-20020414.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

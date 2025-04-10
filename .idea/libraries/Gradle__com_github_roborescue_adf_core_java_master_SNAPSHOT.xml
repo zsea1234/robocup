@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: com.github.roborescue:adf-core-java:master-SNAPSHOT" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="com.github.roborescue" artifactId="adf-core-java" version="master-SNAPSHOT" />
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/com.github.roborescue/adf-core-java/master-SNAPSHOT/6dc5b295fb0d3f8a5bae87897e05c305a12a40a3/adf-core-java-master-SNAPSHOT.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

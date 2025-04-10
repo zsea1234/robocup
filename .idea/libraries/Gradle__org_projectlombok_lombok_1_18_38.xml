@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: org.projectlombok:lombok:1.18.38" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="org.projectlombok" artifactId="lombok" version="1.18.38" />
+    <CLASSES>
+      <root url="jar://$MAVEN_REPOSITORY$/org/projectlombok/lombok/1.18.38/lombok-1.18.38.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

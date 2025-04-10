@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: net.sourceforge.jsi:jsi:1.0.0" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="net.sourceforge.jsi" artifactId="jsi" version="1.0.0" />
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/net.sourceforge.jsi/jsi/1.0.0/839ae06322bc59c0973e263bfd8022da5a0ca0d5/jsi-1.0.0.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

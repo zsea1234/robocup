@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: com.google.common:google-collect:0.5" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="com.google.common" artifactId="google-collect" version="0.5" />
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/com.google.common/google-collect/0.5/3880bb2e640acf6edc4c58e57f31d4d2037461a5/google-collect-0.5.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

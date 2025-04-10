@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/CSU_YUNLU_32g.iml" filepath="$PROJECT_DIR$/.idea/CSU_YUNLU_32g.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/adf-sample-agent-java-master-12g.iml" filepath="$PROJECT_DIR$/.idea/modules/adf-sample-agent-java-master-12g.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/adf-sample-agent-java-master-12g.main.iml" filepath="$PROJECT_DIR$/.idea/modules/adf-sample-agent-java-master-12g.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/adf-sample-agent-java-master-12g.test.iml" filepath="$PROJECT_DIR$/.idea/modules/adf-sample-agent-java-master-12g.test.iml" />
+    </modules>
+  </component>
+</project>

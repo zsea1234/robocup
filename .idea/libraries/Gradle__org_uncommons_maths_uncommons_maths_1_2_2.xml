@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: org.uncommons.maths:uncommons-maths:1.2.2" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="org.uncommons.maths" artifactId="uncommons-maths" version="1.2.2" />
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/org.uncommons.maths/uncommons-maths/1.2.2/e4e84f879d4160be9508aa3904516ec30c39e815/uncommons-maths-1.2.2.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

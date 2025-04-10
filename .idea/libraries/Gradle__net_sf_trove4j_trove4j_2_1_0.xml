@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: net.sf.trove4j:trove4j:2.1.0" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="net.sf.trove4j" artifactId="trove4j" version="2.1.0" />
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/net.sf.trove4j/trove4j/2.1.0/c82f2749a460b95de4c9d2466b62f18c23c7c914/trove4j-2.1.0.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

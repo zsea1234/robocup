@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="Gradle: org.jfree:jcommon:1.0.24" type="java-imported" external-system-id="GRADLE">
+    <properties groupId="org.jfree" artifactId="jcommon" version="1.0.24" />
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/org.jfree/jcommon/1.0.24/d5016f7703896c38f9e511f8a9edda2585cbac8b/jcommon-1.0.24.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
