@@ -58,6 +58,9 @@ public class PoliceZone {
     }
     
     public void updateStatus(int currentTime) {
+        // 更新路障状态
+        updateBlockades();
+        
         calculateClearanceRate();
         calculateBlockadeDensity();
         
@@ -76,17 +79,79 @@ public class PoliceZone {
     private void calculateClearanceRate() {
         int clearedCount = 0;
         int totalCount = 0;
+        
         for (EntityID blockadeID : blockades) {
             StandardEntity entity = worldInfo.getEntity(blockadeID);
             if (entity instanceof Blockade) {
                 Blockade blockade = (Blockade) entity;
-                if (blockade.getRepairCost() == 0) { // 使用repairCost判断是否已清除
+                if (blockade.getRepairCost() == 0) {
                     clearedCount++;
                 }
                 totalCount++;
             }
         }
+        
         this.clearanceRate = totalCount == 0 ? 0.0 : (double) clearedCount / totalCount;
+    }
+    
+    public void updateBlockades() {
+        // 更新路障列表，移除已清除的路障
+        blockades.removeIf(blockadeID -> {
+            StandardEntity entity = worldInfo.getEntity(blockadeID);
+            if (entity instanceof Blockade) {
+                Blockade blockade = (Blockade) entity;
+                return blockade.getRepairCost() == 0;
+            }
+            return false;
+        });
+        
+        // 检查是否有新的路障需要添加
+        for (StandardEntity entity : worldInfo.getAllEntities()) {
+            if (entity instanceof Blockade) {
+                Blockade blockade = (Blockade) entity;
+                if (blockade.getRepairCost() > 0 && !blockades.contains(entity.getID())) {
+                    // 检查路障是否在区域内
+                    StandardEntity nearestRoad = findNearestRoad(entity);
+                    if (nearestRoad != null && roads.contains(nearestRoad.getID())) {
+                        blockades.add(entity.getID());
+                    }
+                }
+            }
+        }
+    }
+    
+    private StandardEntity findNearestRoad(StandardEntity entity) {
+        StandardEntity nearest = null;
+        double minDistance = Double.MAX_VALUE;
+        
+        for (EntityID roadID : roads) {
+            StandardEntity road = worldInfo.getEntity(roadID);
+            if (road != null) {
+                double distance = calculateDistance(entity, road);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    nearest = road;
+                }
+            }
+        }
+        
+        return nearest;
+    }
+    
+    private double calculateDistance(StandardEntity entity1, StandardEntity entity2) {
+        if (!(entity1 instanceof Area) || !(entity2 instanceof Area)) {
+            return Double.MAX_VALUE;
+        }
+        
+        Area area1 = (Area) entity1;
+        Area area2 = (Area) entity2;
+        
+        int x1 = area1.getX();
+        int y1 = area1.getY();
+        int x2 = area2.getX();
+        int y2 = area2.getY();
+        
+        return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
     }
     
     private void calculateBlockadeDensity() {
@@ -105,8 +170,25 @@ public class PoliceZone {
     }
     
     private double calculateAverageResponseTime() {
-        // 实现响应时间计算逻辑
-        return 0.0;
+        if (priorityCommands.isEmpty()) {
+            return 0.0;
+        }
+        
+        double totalResponseTime = 0.0;
+        int count = 0;
+        
+        for (CommandInfo commandInfo : priorityCommands) {
+            StandardEntity target = worldInfo.getEntity(commandInfo.getCommand().getTargetID());
+            if (target instanceof Blockade) {
+                Blockade blockade = (Blockade) target;
+                if (blockade.getRepairCost() == 0) {
+                    totalResponseTime += commandInfo.getTime();
+                    count++;
+                }
+            }
+        }
+        
+        return count == 0 ? 0.0 : totalResponseTime / count;
     }
     
     private double calculatePoliceUtilization() {
@@ -188,5 +270,34 @@ public class PoliceZone {
         return policeAgents.contains(entityID) || 
                blockades.contains(entityID) || 
                roads.contains(entityID);
+    }
+    
+    public int getZoneId() {
+        return zoneID;
+    }
+    
+    public double calculateWorkload(int currentTime) {
+        double workload = 0.0;
+        
+        // 考虑未处理的路障数量
+        workload += blockades.size() * 1.0;
+        
+        // 考虑高优先级命令
+        workload += priorityCommands.size() * 2.0;
+        
+        // 考虑警察数量
+        if (!policeAgents.isEmpty()) {
+            workload /= policeAgents.size();
+        }
+        
+        return workload;
+    }
+    
+    public int getPoliceCount() {
+        return policeAgents.size();
+    }
+    
+    public void setPriority(double priority) {
+        this.priority = priority;
     }
 } 

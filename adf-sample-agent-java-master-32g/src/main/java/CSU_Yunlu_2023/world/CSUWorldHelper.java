@@ -536,7 +536,7 @@ public class CSUWorldHelper extends AbstractModule {
     private void sendCommandPolice(MessageManager messageManager){
         EntityID nowPosition = this.agentInfo.getPosition();
         StandardEntity standardEntity = this.worldInfo.getEntity(nowPosition);
-        Human human = (Human) this.agentInfo.me();
+        StandardEntity self = this.agentInfo.me();
 
         if (standardEntity instanceof Building&&this.hasBlockades(standardEntity)&&this.isStuckInBuilding()){
             this.stayTime = 0;
