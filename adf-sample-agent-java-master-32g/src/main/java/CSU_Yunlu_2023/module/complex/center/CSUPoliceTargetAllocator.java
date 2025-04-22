@@ -1,26 +1,22 @@
 package CSU_Yunlu_2023.module.complex.center;
 
-import CSU_Yunlu_2023.world.object.CSURoad;
 import adf.core.agent.communication.MessageManager;
-import adf.core.agent.communication.standard.bundle.StandardMessage;
 import adf.core.agent.communication.standard.bundle.centralized.CommandPolice;
 import adf.core.agent.develop.DevelopData;
 import adf.core.agent.info.AgentInfo;
 import adf.core.agent.info.ScenarioInfo;
 import adf.core.agent.info.WorldInfo;
 import adf.core.agent.module.ModuleManager;
-import adf.core.agent.precompute.PrecomputeData;
 import adf.core.component.communication.CommunicationMessage;
 import CSU_Yunlu_2023.module.algorithm.AStarPathPlanning;
 import CSU_Yunlu_2023.util.Logger;
 import rescuecore2.worldmodel.EntityID;
 import rescuecore2.standard.entities.*;
 import java.util.*;
-import java.io.*;
 
-public class PoliceTargetAllocator extends adf.core.component.module.complex.PoliceTargetAllocator implements AutoCloseable {
-    private static final int MAX_ZONES = 10;
+public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.PoliceTargetAllocator implements AutoCloseable {
     private static final double REBALANCE_THRESHOLD = 0.3;
+    private static final double SATURATION_COEFFICIENT = 1.5;
     
     private List<PoliceZone> zones;
     private Map<EntityID, PoliceZone> policeZoneMap;
@@ -37,9 +33,12 @@ public class PoliceTargetAllocator extends adf.core.component.module.complex.Pol
     // 日志
     private final Logger logger;
     
-    public PoliceTargetAllocator(AgentInfo ai, WorldInfo wi, ScenarioInfo si, ModuleManager moduleManager, DevelopData developData) {
+    // 添加动态警察列表
+    private List<EntityID> dynamicPoliceAgents;
+    
+    public CSUPoliceTargetAllocator(AgentInfo ai, WorldInfo wi, ScenarioInfo si, ModuleManager moduleManager, DevelopData developData) {
         super(ai, wi, si, moduleManager, developData);
-        logger = Logger.getLogger(PoliceTargetAllocator.class);
+        logger = Logger.getLogger(CSUPoliceTargetAllocator.class);
         logger.info("初始化 PoliceTargetAllocator");
         initialize();
     }
@@ -53,6 +52,7 @@ public class PoliceTargetAllocator extends adf.core.component.module.complex.Pol
         rebalanceInterval = 50;
         pathPlanner = new AStarPathPlanning(agentInfo, worldInfo, scenarioInfo, moduleManager, developData);
         performanceMonitor = new PerformanceMonitor();
+        dynamicPoliceAgents = new ArrayList<>();
         
         initializeZones();
         logger.info("初始化完成，创建了 " + zones.size() + " 个区域");
@@ -85,7 +85,16 @@ public class PoliceTargetAllocator extends adf.core.component.module.complex.Pol
         logger.info("发现 " + roads.size() + " 条道路和 " + blockades.size() + " 个路障");
         logger.info("发现 " + policeForces.size() + " 个警察");
         
-        for (int i = 0; i < MAX_ZONES; i++) {
+        // 计算区域数量
+        int policeCount = policeForces.size();
+        int maxPartitionNumber = (int)(SATURATION_COEFFICIENT * policeCount);
+        int sqrtMPN = (int)Math.floor(Math.sqrt(maxPartitionNumber));
+        int actualPartitionNumber = sqrtMPN * (int)Math.ceil(maxPartitionNumber / (double)sqrtMPN);
+        
+        logger.info("根据警察数量 " + policeCount + " 计算得到最大分区数 " + maxPartitionNumber + ", 实际分区数 " + actualPartitionNumber);
+        
+        // 创建区域
+        for (int i = 0; i < actualPartitionNumber; i++) {
             PoliceZone zone = new PoliceZone(i);
             zone.setWorldInfo(worldInfo);
             zones.add(zone);
@@ -93,7 +102,7 @@ public class PoliceTargetAllocator extends adf.core.component.module.complex.Pol
         
         distributeEntities(roads, blockades);
         distributePolice(policeForces);
-        logger.info("区域初始化完成，每个区域平均分配 " + (roads.size() / MAX_ZONES) + " 条道路和 " + (blockades.size() / MAX_ZONES) + " 个路障");
+        logger.info("区域初始化完成，每个区域平均分配 " + (roads.size() / actualPartitionNumber) + " 条道路和 " + (blockades.size() / actualPartitionNumber) + " 个路障");
     }
     
     private void distributeEntities(List<StandardEntity> roads, List<StandardEntity> blockades) {
@@ -160,20 +169,30 @@ public class PoliceTargetAllocator extends adf.core.component.module.complex.Pol
     private void distributePolice(List<StandardEntity> policeForces) {
         logger.info("开始分配警察到各个区域...");
         int zoneCount = zones.size();
-        int policePerZone = policeForces.size() / zoneCount;
+        int staticPoliceCount = (int)(policeForces.size() * 0.8);
+        
         
         for (int i = 0; i < zoneCount; i++) {
             PoliceZone zone = zones.get(i);
-            int startPolice = i * policePerZone;
-            int endPolice = (i == zoneCount - 1) ? policeForces.size() : (i + 1) * policePerZone;
+            int startPolice = i * staticPoliceCount / zoneCount;
+            int endPolice = (i == zoneCount - 1) ? staticPoliceCount : (i + 1) * staticPoliceCount / zoneCount;
             
-            for (int j = startPolice; j < endPolice; j++) {
+            for (int j = startPolice; j < endPolice && j < policeForces.size(); j++) {
                 StandardEntity police = policeForces.get(j);
                 zone.addPolice(police.getID());
                 policeZoneMap.put(police.getID(), zone);
                 logger.debug("将警察 " + police.getID() + " 分配到区域 " + i);
             }
         }
+        
+        // 剩余的警察作为动态警察
+        for (int i = staticPoliceCount; i < policeForces.size(); i++) {
+            StandardEntity police = policeForces.get(i);
+            dynamicPoliceAgents.add(police.getID());
+            logger.debug("将警察 " + police.getID() + " 设为动态警察");
+        }
+        
+        logger.info("静态警察数量: " + staticPoliceCount + ", 动态警察数量: " + dynamicPoliceAgents.size());
     }
     
     @Override
@@ -182,7 +201,7 @@ public class PoliceTargetAllocator extends adf.core.component.module.complex.Pol
     }
     
     @Override
-    public PoliceTargetAllocator calc() {
+    public CSUPoliceTargetAllocator calc() {
         logger.info("开始计算任务分配...");
         int currentTime = agentInfo.getTime();
         
@@ -321,23 +340,220 @@ public class PoliceTargetAllocator extends adf.core.component.module.complex.Pol
         // 处理高优先级目标
         processHighPriorityTargets(police);
         
-        // 处理普通路障
-        if (!blockades.isEmpty()) {
-            // 按区域优先级排序
-            zones.sort(Comparator.comparingDouble(PoliceZone::getPriority).reversed());
+        // 为静态警察分配任务
+        allocateStaticPolice();
+        
+        // 为动态警察分配任务
+        allocateDynamicPolice();
+        
+        logger.info("任务分配完成，共分配 " + allocationResult.size() + " 个任务");
+    }
+    
+    private void allocateStaticPolice() {
+        // 按区域优先级排序
+        zones.sort(Comparator.comparingDouble(PoliceZone::getPriority).reversed());
+        
+        for (PoliceZone zone : zones) {
+            List<EntityID> zoneBlockades = zone.getBlockades();
+            List<EntityID> zonePolice = zone.getPoliceAgents();
             
-            for (PoliceZone zone : zones) {
+            if (!zoneBlockades.isEmpty() && !zonePolice.isEmpty()) {
+                // 为区域内的警察分配任务
+                for (EntityID policeID : zonePolice) {
+                    if (!allocationResult.containsKey(policeID) && !dynamicPoliceAgents.contains(policeID)) {
+                        EntityID target = findNearestBlockadeInZone(policeID, zoneBlockades);
+                        if (target != null) {
+                            allocationResult.put(policeID, target);
+                            logger.debug("为静态警察 " + policeID + " 分配路障 " + target);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private void allocateDynamicPolice() {
+        if (dynamicPoliceAgents.isEmpty()) {
+            logger.debug("没有动态警察可分配");
+            return;
+        }
+        
+        // 计算每个区域的评估值
+        Map<PoliceZone, Double> zoneEvaluations = calculateZoneEvaluations();
+        
+        // 按评估值排序区域
+        List<Map.Entry<PoliceZone, Double>> sortedZones = new ArrayList<>(zoneEvaluations.entrySet());
+        sortedZones.sort(Map.Entry.<PoliceZone, Double>comparingByValue().reversed());
+        
+        // 为动态警察分配任务
+        for (EntityID policeID : dynamicPoliceAgents) {
+            if (allocationResult.containsKey(policeID)) {
+                continue;
+            }
+            
+            // 选择评估值最高的区域
+            for (Map.Entry<PoliceZone, Double> entry : sortedZones) {
+                PoliceZone zone = entry.getKey();
                 List<EntityID> zoneBlockades = zone.getBlockades();
-                List<EntityID> zonePolice = zone.getPoliceAgents();
                 
-                if (!zoneBlockades.isEmpty() && !zonePolice.isEmpty()) {
-                    // 为区域内的警察分配任务
-                    for (EntityID policeID : zonePolice) {
-                        if (!allocationResult.containsKey(policeID)) {
-                            EntityID target = findNearestBlockadeInZone(policeID, zoneBlockades);
-                            if (target != null) {
-                                allocationResult.put(policeID, target);
-                                logger.debug("为警察 " + policeID + " 分配路障 " + target);
+                if (!zoneBlockades.isEmpty()) {
+                    EntityID target = findNearestBlockadeInZone(policeID, zoneBlockades);
+                    if (target != null) {
+                        allocationResult.put(policeID, target);
+                        logger.debug("为动态警察 " + policeID + " 分配区域 " + zone.getZoneId() + " 的路障 " + target + ", 区域评估值: " + entry.getValue());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    private Map<PoliceZone, Double> calculateZoneEvaluations() {
+        Map<PoliceZone, Double> evaluations = new HashMap<>();
+        
+        for (PoliceZone zone : zones) {
+            // 实现线性加权评价模型
+            double evaluation = 0.0;
+            
+            // 影响因子权重
+            final double W_REFUGE = 0.1;       // countref - 避难所数量
+            final double W_FIRE = 0.15;        // countfire - 着火建筑数量
+            final double W_FB = 0.1;           // countfb - 消防队数量
+            final double W_AT = 0.1;           // countat - 救护队数量
+            final double W_PF = -0.1;          // countpf - 警察数量（负权重，警察越多评价越低）
+            final double W_CIV = 0.1;          // countciv - 市民数量
+            final double W_DIST = -0.1;        // distome - 与自身距离（负权重，距离越远评价越低）
+            final double W_BLOCKREP = 0.15;    // blockrep - 完全性路障报告数
+            final double W_LOCKEDREP = 0.2;    // lockedrep - 被困智能体报告数
+            final double W_PATH = 0.1;         // countpath - 道路数量
+            
+            // 计算各因素值
+            double countref = countEntitiesInZone(zone, StandardEntityURN.REFUGE);
+            double countfire = countBurningBuildingsInZone(zone);
+            double countfb = countEntitiesInZone(zone, StandardEntityURN.FIRE_BRIGADE);
+            double countat = countEntitiesInZone(zone, StandardEntityURN.AMBULANCE_TEAM);
+            double countpf = zone.getPoliceCount();
+            double countciv = countEntitiesInZone(zone, StandardEntityURN.CIVILIAN);
+            double distome = calculateAverageDistanceToZone(zone);
+            double blockrep = zone.getBlockades().size();
+            double lockedrep = countTrappedHumansInZone(zone);
+            double countpath = zone.getRoads().size();
+            
+            // 归一化处理
+            countref = normalize(countref, 0, 5);
+            countfire = normalize(countfire, 0, 20);
+            countfb = normalize(countfb, 0, 10);
+            countat = normalize(countat, 0, 10);
+            countpf = normalize(countpf, 0, 10);
+            countciv = normalize(countciv, 0, 50);
+            distome = normalize(distome, 0, 100000);
+            blockrep = normalize(blockrep, 0, 30);
+            lockedrep = normalize(lockedrep, 0, 10);
+            countpath = normalize(countpath, 0, 100);
+            
+            // 线性加权求和
+            evaluation = W_REFUGE * countref +
+                         W_FIRE * countfire +
+                         W_FB * countfb +
+                         W_AT * countat +
+                         W_PF * countpf +
+                         W_CIV * countciv +
+                         W_DIST * distome +
+                         W_BLOCKREP * blockrep +
+                         W_LOCKEDREP * lockedrep +
+                         W_PATH * countpath;
+            
+            evaluations.put(zone, evaluation);
+            logger.debug("区域 " + zone.getZoneId() + " 评估值: " + evaluation);
+        }
+        
+        return evaluations;
+    }
+    
+    // 归一化函数，将值映射到0-1之间
+    private double normalize(double value, double min, double max) {
+        if (max == min) return 0.5;
+        return Math.min(1.0, Math.max(0.0, (value - min) / (max - min)));
+    }
+    
+    private double countEntitiesInZone(PoliceZone zone, StandardEntityURN type) {
+        int count = 0;
+        List<EntityID> roadIDs = zone.getRoads();
+        
+        for (EntityID roadID : roadIDs) {
+            Road road = (Road) worldInfo.getEntity(roadID);
+            if (road != null) {
+                for (EntityID nearbyID : road.getNeighbours()) {
+                    StandardEntity entity = worldInfo.getEntity(nearbyID);
+                    if (entity.getStandardURN() == type) {
+                        count++;
+                    }
+                }
+            }
+        }
+        
+        return count;
+    }
+    
+    private double countBurningBuildingsInZone(PoliceZone zone) {
+        int count = 0;
+        List<EntityID> roadIDs = zone.getRoads();
+        
+        for (EntityID roadID : roadIDs) {
+            Road road = (Road) worldInfo.getEntity(roadID);
+            if (road != null) {
+                for (EntityID nearbyID : road.getNeighbours()) {
+                    StandardEntity entity = worldInfo.getEntity(nearbyID);
+                    if (entity instanceof Building) {
+                        Building building = (Building) entity;
+                        if (building.isOnFire()) {
+                            count++;
+                        }
+                    }
+                }
+            }
+        }
+        
+        return count;
+    }
+    
+    private double calculateAverageDistanceToZone(PoliceZone zone) {
+        double totalDistance = 0.0;
+        int count = 0;
+        
+        for (EntityID dynamicPoliceID : dynamicPoliceAgents) {
+            StandardEntity police = worldInfo.getEntity(dynamicPoliceID);
+            if (police != null) {
+                for (EntityID roadID : zone.getRoads()) {
+                    StandardEntity road = worldInfo.getEntity(roadID);
+                    if (road != null) {
+                        totalDistance += calculateDistance(police, road);
+                        count++;
+                    }
+                }
+            }
+        }
+        
+        return count > 0 ? totalDistance / count : Double.MAX_VALUE;
+    }
+    
+    private double countTrappedHumansInZone(PoliceZone zone) {
+        int count = 0;
+        List<EntityID> roadIDs = zone.getRoads();
+        
+        for (EntityID roadID : roadIDs) {
+            StandardEntity roadEntity = worldInfo.getEntity(roadID);
+            if (roadEntity instanceof Road) {
+                Road road = (Road) roadEntity;
+                if (road.isBlockadesDefined()) {
+                    Collection<Blockade> blockades = worldInfo.getBlockades(road.getID());
+                    if (blockades != null && !blockades.isEmpty()) {
+                        for (StandardEntity entity : worldInfo.getAllEntities()) {
+                            if (entity instanceof Human) {
+                                Human human = (Human) entity;
+                                if (human.getPosition().equals(road.getID())) {
+                                    count++;
+                                }
                             }
                         }
                     }
@@ -345,7 +561,7 @@ public class PoliceTargetAllocator extends adf.core.component.module.complex.Pol
             }
         }
         
-        logger.info("任务分配完成，共分配 " + allocationResult.size() + " 个任务");
+        return count;
     }
     
     private EntityID findNearestBlockadeInZone(EntityID policeID, List<EntityID> blockades) {
@@ -531,7 +747,7 @@ public class PoliceTargetAllocator extends adf.core.component.module.complex.Pol
     }
     
     @Override
-    public PoliceTargetAllocator updateInfo(MessageManager messageManager) {
+    public CSUPoliceTargetAllocator updateInfo(MessageManager messageManager) {
         try {
             logger.info("开始更新信息...");
             super.updateInfo(messageManager);

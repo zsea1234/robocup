@@ -9,7 +9,9 @@
   </component>
   <component name="JavacSettings">
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
-      <module name="adf-sample-agent-java-master-12g.main" options="--add-modules java.base,java.desktop" />
+      <module name="adf-sample-agent-java-master-12g" options="-Xlint:unchecked -Xlint:deprecation" />
+      <module name="adf-sample-agent-java-master-12g.main" options="-Xlint:unchecked -Xlint:deprecation" />
+      <module name="adf-sample-agent-java-master-12g.test" options="-Xlint:unchecked -Xlint:deprecation" />
     </option>
   </component>
 </project>

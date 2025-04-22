@@ -38,6 +38,24 @@ public class PoliceZone {
     private Map<EntityID, Integer> targetPriority;
     private WorldInfo worldInfo;
     
+    // 添加被困智能体记录
+    private List<EntityID> trappedHumans;
+    
+    // 添加分区中心点
+    private Point2D centerPoint;
+    
+    private class Point2D {
+        double x, y;
+        
+        public Point2D(double x, double y) {
+            this.x = x;
+            this.y = y;
+        }
+        
+        public double getX() { return x; }
+        public double getY() { return y; }
+    }
+    
     public PoliceZone(int zoneID) {
         this.zoneID = zoneID;
         this.policeAgents = new ArrayList<>();
@@ -51,6 +69,8 @@ public class PoliceZone {
         this.zoneCoverage = 0.0;
         this.priorityCommands = new ArrayList<>();
         this.targetPriority = new HashMap<>();
+        this.trappedHumans = new ArrayList<>();
+        this.centerPoint = null;
     }
     
     public void setWorldInfo(WorldInfo worldInfo) {
@@ -61,19 +81,145 @@ public class PoliceZone {
         // 更新路障状态
         updateBlockades();
         
+        // 更新被困智能体状态
+        updateTrappedHumans();
+        
+        // 更新区域中心点
+        if (centerPoint == null) {
+            calculateCenterPoint();
+        }
+        
         calculateClearanceRate();
         calculateBlockadeDensity();
         
         // 根据消息优先级调整分区优先级
         double messagePriority = calculateMessagePriority();
         
+        // 增加被困智能体优先级因素
+        double trappedHumansFactor = calculateTrappedHumansFactor();
+        
         // 综合计算最终优先级
-        this.priority = messagePriority * 0.6 + 
+        this.priority = messagePriority * 0.4 + 
                        (1 - clearanceRate) * 0.2 + 
-                       blockadeDensity * 0.2;
+                       blockadeDensity * 0.2 + 
+                       trappedHumansFactor * 0.2;
         
         // 更新性能指标
         calculatePerformanceMetrics();
+    }
+    
+    // 计算被困智能体因素
+    private double calculateTrappedHumansFactor() {
+        if (trappedHumans.isEmpty()) {
+            return 0.0;
+        }
+        
+        // 计算被困智能体数量与可能救援智能体数量的比例
+        double rescuableAgentsCount = countRescuableAgents();
+        double trappedCount = trappedHumans.size();
+        
+        // 如果没有可救援的智能体，则优先级设为最高
+        if (rescuableAgentsCount == 0) {
+            return 1.0;
+        }
+        
+        // 返回被困智能体数量与可救援智能体数量的比例，值在0-1之间
+        return Math.min(1.0, trappedCount / rescuableAgentsCount);
+    }
+    
+    // 计算区域内可能参与救援的智能体数量（消防、救护、警察等）
+    private double countRescuableAgents() {
+        double count = 0;
+        
+        for (EntityID roadID : roads) {
+            StandardEntity roadEntity = worldInfo.getEntity(roadID);
+            if (roadEntity instanceof Road) {
+                Road road = (Road) roadEntity;
+                for (EntityID nearbyID : road.getNeighbours()) {
+                    StandardEntity entity = worldInfo.getEntity(nearbyID);
+                    if (entity instanceof Human && 
+                        !(entity instanceof Civilian) && 
+                        !trappedHumans.contains(entity.getID())) {
+                        count++;
+                    }
+                }
+            }
+        }
+        
+        return count;
+    }
+    
+    // 更新被困智能体状态
+    private void updateTrappedHumans() {
+        // 清除已不再被困的智能体
+        trappedHumans.removeIf(humanID -> {
+            StandardEntity entity = worldInfo.getEntity(humanID);
+            if (entity instanceof Human) {
+                Human human = (Human) entity;
+                
+                // 检查是否还在被困状态
+                if (human.isPositionDefined()) {
+                    EntityID positionID = human.getPosition();
+                    StandardEntity position = worldInfo.getEntity(positionID);
+                    
+                    if (position instanceof Road) {
+                        Road road = (Road) position;
+                        if (!road.isBlockadesDefined() || worldInfo.getBlockades(road.getID()).isEmpty()) {
+                            return true; // 移除不再被困的智能体
+                        }
+                    } else {
+                        return true; // 不在道路上，认为不再被困
+                    }
+                }
+            }
+            return false;
+        });
+        
+        // 添加新的被困智能体
+        for (StandardEntity entity : worldInfo.getAllEntities()) {
+            if (entity instanceof Human && !trappedHumans.contains(entity.getID())) {
+                Human human = (Human) entity;
+                
+                if (human.isPositionDefined()) {
+                    EntityID positionID = human.getPosition();
+                    StandardEntity position = worldInfo.getEntity(positionID);
+                    
+                    if (position instanceof Road) {
+                        Road road = (Road) position;
+                        if (road.isBlockadesDefined() && !worldInfo.getBlockades(road.getID()).isEmpty()) {
+                            // 检查是否在当前区域内
+                            if (roads.contains(road.getID())) {
+                                trappedHumans.add(human.getID());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // 计算区域中心点
+    private void calculateCenterPoint() {
+        if (roads.isEmpty()) {
+            return;
+        }
+        
+        double sumX = 0, sumY = 0;
+        int count = 0;
+        
+        for (EntityID roadID : roads) {
+            StandardEntity entity = worldInfo.getEntity(roadID);
+            if (entity instanceof Road) {
+                Road road = (Road) entity;
+                sumX += road.getX();
+                sumY += road.getY();
+                count++;
+            }
+        }
+        
+        if (count > 0) {
+            centerPoint = new Point2D(sumX / count, sumY / count);
+        }
     }
     
     private void calculateClearanceRate() {
@@ -139,6 +285,24 @@ public class PoliceZone {
     }
     
     private double calculateDistance(StandardEntity entity1, StandardEntity entity2) {
+        // 如果一个是Blockade，获取其位置
+        if (entity1 instanceof Blockade) {
+            Blockade blockade = (Blockade) entity1;
+            if (blockade.isPositionDefined()) {
+                EntityID positionID = blockade.getPosition();
+                entity1 = worldInfo.getEntity(positionID);
+            }
+        }
+        
+        if (entity2 instanceof Blockade) {
+            Blockade blockade = (Blockade) entity2;
+            if (blockade.isPositionDefined()) {
+                EntityID positionID = blockade.getPosition();
+                entity2 = worldInfo.getEntity(positionID);
+            }
+        }
+        
+        // 普通距离计算
         if (!(entity1 instanceof Area) || !(entity2 instanceof Area)) {
             return Double.MAX_VALUE;
         }
@@ -152,6 +316,21 @@ public class PoliceZone {
         int y2 = area2.getY();
         
         return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+    }
+    
+    // 计算从某点到区域中心的距离
+    public double distanceToCenter(double x, double y) {
+        if (centerPoint == null) {
+            calculateCenterPoint();
+        }
+        
+        if (centerPoint == null) {
+            return Double.MAX_VALUE;
+        }
+        
+        double dx = x - centerPoint.getX();
+        double dy = y - centerPoint.getY();
+        return Math.sqrt(dx * dx + dy * dy);
     }
     
     private void calculateBlockadeDensity() {
@@ -217,11 +396,38 @@ public class PoliceZone {
     
     public List<EntityID> getHighPriorityTargets() {
         List<EntityID> highPriorityTargets = new ArrayList<>();
+        
+        // 首先添加被困智能体路障
+        for (EntityID humanID : trappedHumans) {
+            StandardEntity entity = worldInfo.getEntity(humanID);
+            if (entity instanceof Human) {
+                Human human = (Human) entity;
+                if (human.isPositionDefined()) {
+                    EntityID positionID = human.getPosition();
+                    StandardEntity position = worldInfo.getEntity(positionID);
+                    
+                    if (position instanceof Road) {
+                        Road road = (Road) position;
+                        if (road.isBlockadesDefined()) {
+                            Collection<Blockade> roadBlockades = worldInfo.getBlockades(road.getID());
+                            if (roadBlockades != null && !roadBlockades.isEmpty()) {
+                                for (Blockade blockade : roadBlockades) {
+                                    highPriorityTargets.add(blockade.getID());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 然后添加其他高优先级路障
         for (Map.Entry<EntityID, Integer> entry : targetPriority.entrySet()) {
-            if (entry.getValue() >= 2) {
+            if (entry.getValue() >= 2 && !highPriorityTargets.contains(entry.getKey())) {
                 highPriorityTargets.add(entry.getKey());
             }
         }
+        
         return highPriorityTargets;
     }
     
@@ -257,6 +463,8 @@ public class PoliceZone {
     public double getResponseTime() { return responseTime; }
     public double getPoliceUtilization() { return policeUtilization; }
     public double getZoneCoverage() { return zoneCoverage; }
+    public List<EntityID> getTrappedHumans() { return trappedHumans; }
+    public Point2D getCenterPoint() { return centerPoint; }
     
     // Setters
     public void addPolice(EntityID policeID) { policeAgents.add(policeID); }
@@ -269,7 +477,8 @@ public class PoliceZone {
     public boolean containsEntity(EntityID entityID) {
         return policeAgents.contains(entityID) || 
                blockades.contains(entityID) || 
-               roads.contains(entityID);
+               roads.contains(entityID) ||
+               trappedHumans.contains(entityID);
     }
     
     public int getZoneId() {
@@ -281,6 +490,9 @@ public class PoliceZone {
         
         // 考虑未处理的路障数量
         workload += blockades.size() * 1.0;
+        
+        // 考虑被困智能体（高优先级）
+        workload += trappedHumans.size() * 3.0;
         
         // 考虑高优先级命令
         workload += priorityCommands.size() * 2.0;
