@@ -31,6 +31,7 @@ public class SampleKMeans extends StaticClustering {
 	private int repeatPreparate;
 	private boolean calced = false;
 	private boolean assignAgentsFlag;
+	private Map<Integer, EntityID> clusterCenters = new HashMap<>();
 
 	private int clusterNumber;
 	private int agentSize;
@@ -213,7 +214,7 @@ public class SampleKMeans extends StaticClustering {
 		allocations = hungarianAgentAssign.execute();
 	}
 
-	private void calClusterAndAssign(){
+	public void calClusterAndAssign(){
 
 		allNodes.clear();
 		sortedTeamAgents.clear();
@@ -326,8 +327,61 @@ public class SampleKMeans extends StaticClustering {
 		}
 		else
 			assignAgent();
+		calculateClusterCenters();
 		this.calced = true;
 		visualDebug();
+	} private void calculateClusterCenters() {
+		clusterCenters.clear();
+		Map<Integer, List<ClusterNode>> clusterMap = new HashMap<>();
+
+		// 将所有节点按聚类索引分组
+		for (ClusterNode node : allNodes) {
+			clusterMap.computeIfAbsent(node.clusterIndex, k -> new ArrayList<>()).add(node);
+		}
+
+		// 计算每个聚类的几何中心
+		for (Map.Entry<Integer, List<ClusterNode>> entry : clusterMap.entrySet()) {
+			int clusterIdx = entry.getKey();
+			List<ClusterNode> nodes = entry.getValue();
+
+			// 计算平均坐标
+			double sumX = 0, sumY = 0;
+			for (ClusterNode node : nodes) {
+				sumX += node.point[0];
+				sumY += node.point[1];
+			}
+			double centerX = sumX / nodes.size();
+			double centerY = sumY / nodes.size();
+
+			// 寻找最近的实体作为中心代表
+			ClusterNode nearest = null;
+			double minDistance = Double.MAX_VALUE;
+			for (ClusterNode node : nodes) {
+				double distance = dist(node.point[0], node.point[1], centerX, centerY);
+				if (distance < minDistance) {
+					minDistance = distance;
+					nearest = node;
+				}
+			}
+
+			if (nearest != null) {
+				clusterCenters.put(clusterIdx, nearest.area.getID());
+			}
+		}
+	}
+
+	// 新增方法：根据聚类索引获取中心实体
+	public EntityID getClusterCenterByIndex(int clusterIndex) {
+		return clusterCenters.getOrDefault(clusterIndex, null);
+	}
+	public EntityID getClusterCenter(EntityID agentID) {
+		StandardEntity agent = this.worldInfo.getEntity(agentID);
+		if (agent == null || !sortedTeamAgents.contains(agent)) {
+			return null;
+		}
+
+		int clusterIndex = getAgentInitialClusterIndex(agent);
+		return clusterCenters.getOrDefault(clusterIndex, null);
 	}
 	private void assignAT_FB() {
 		ArrayList<StandardEntity> agentList = new ArrayList<>(sortedTeamAgents);
@@ -384,10 +438,10 @@ public class SampleKMeans extends StaticClustering {
 			if (result == null) {
 				result = agent;
 			} else {
-					if (costMatrix[sortedTeamAgents.indexOf(agent)][ClusterIdx] < cost) {
-						result = agent;
-						cost = costMatrix[sortedTeamAgents.indexOf(agent)][ClusterIdx];
-					}
+				if (costMatrix[sortedTeamAgents.indexOf(agent)][ClusterIdx] < cost) {
+					result = agent;
+					cost = costMatrix[sortedTeamAgents.indexOf(agent)][ClusterIdx];
+				}
 			}
 		}
 		return result;
