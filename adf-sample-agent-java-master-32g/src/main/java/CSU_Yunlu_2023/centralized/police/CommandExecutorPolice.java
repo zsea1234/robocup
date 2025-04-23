@@ -49,18 +49,18 @@ public class CommandExecutorPolice extends CommandExecutor<CommandPolice> {
 	        switch  (scenarioInfo.getMode()) {
 	            case PRECOMPUTATION_PHASE:
 	                this.pathPlanning = moduleManager.getModule("CommandExecutorPolice.PathPlanning", "adf.core.sample.module.algorithm.SamplePathPlanning");
-	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorPolice.ActionExtClear", "adf.core.sample.extaction.ActionExtClear");
-	                this.actionExtMove = moduleManager.getExtAction("CommandExecutorPolice.ActionExtMove", "adf.core.sample.extaction.ActionExtMove");
+	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorPolice.ActionExtClear", "CSU_Yunlu_2023.extaction.pf.ActionExtClear");
+	                this.actionExtMove = moduleManager.getExtAction("CommandExecutorPolice.ActionExtMove", "CSU_Yunlu_2023.extaction.at.ActionExtMove");
 	                break;
 	            case PRECOMPUTED:
 	                this.pathPlanning = moduleManager.getModule("CommandExecutorPolice.PathPlanning", "adf.core.sample.module.algorithm.SamplePathPlanning");
-	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorPolice.ActionExtClear", "adf.core.sample.extaction.ActionExtClear");
-	                this.actionExtMove = moduleManager.getExtAction("CommandExecutorPolice.ActionExtMove", "adf.core.sample.extaction.ActionExtMove");
+	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorPolice.ActionExtClear", "CSU_Yunlu_2023.extaction.pf.ActionExtClear");
+	                this.actionExtMove = moduleManager.getExtAction("CommandExecutorPolice.ActionExtMove", "CSU_Yunlu_2023.extaction.at.ActionExtMove");
 	                break;
 	            case NON_PRECOMPUTE:
 	                this.pathPlanning = moduleManager.getModule("CommandExecutorPolice.PathPlanning", "adf.core.sample.module.algorithm.SamplePathPlanning");
-	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorPolice.ActionExtClear", "adf.core.sample.extaction.ActionExtClear");
-	                this.actionExtMove = moduleManager.getExtAction("CommandExecutorPolice.ActionExtMove", "adf.core.sample.extaction.ActionExtMove");
+	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorPolice.ActionExtClear", "CSU_Yunlu_2023.extaction.pf.ActionExtClear");
+	                this.actionExtMove = moduleManager.getExtAction("CommandExecutorPolice.ActionExtMove", "CSU_Yunlu_2023.extaction.at.ActionExtMove");
 	                break;
 	        }
 	    }

@@ -22,6 +22,11 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
     private static final double REBALANCE_THRESHOLD = 0.3;
     private static final double SATURATION_COEFFICIENT = 0.5;
     
+    // 添加关键道路识别和重要设施相关常量
+    private static final double CRITICAL_ROAD_BONUS = 0.5;  // 关键道路优先级加成
+    private static final double HYDRANT_BONUS = 0.3;        // 消防栓附近优先级加成
+    private static final double REFUGE_VICINITY_BONUS = 0.4; // 避难所附近优先级加成
+    
     private List<PoliceZone> zones;
     private Map<EntityID, PoliceZone> policeZoneMap;
     private Map<EntityID, EntityID> allocationResult;
@@ -43,6 +48,13 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
     // 添加此方法来初始化缓存变量
     private Map<String, Double> distanceCache = new HashMap<>();
     
+    // 添加重要道路缓存
+    private Set<EntityID> criticalRoads;
+    
+    // 添加上次清除路障统计
+    private Map<EntityID, Integer> lastClearedTime;
+    private Map<EntityID, Double> clearanceProgress;
+    
     public CSUPoliceTargetAllocator(AgentInfo ai, WorldInfo wi, ScenarioInfo si, ModuleManager moduleManager, DevelopData developData) {
         super(ai, wi, si, moduleManager, developData);
         logger = Logger.getLogger(CSUPoliceTargetAllocator.class);
@@ -50,16 +62,26 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
         initialize();
     }
     
-    private void initialize() {
-        logger.info("开始初始化...");
+    @Override
+    public void initialize() {
+        super.initialize();
+        this.dynamicPoliceAgents = new ArrayList<>();
+        this.criticalRoads = new HashSet<>();  // 初始化关键道路集合
+        this.policeRoadMap = new HashMap<>();
+        
+        // 调用关键道路识别方法
+        identifyCriticalRoads();
+        
+        // 其他初始化代码
         zones = new ArrayList<>();
         policeZoneMap = new HashMap<>();
         allocationResult = new HashMap<>();
         lastRebalanceTime = 0;
-        rebalanceInterval = 50;
+        rebalanceInterval = 30; // 减小重分配间隔，使系统更灵敏
         pathPlanner = new AStarPathPlanning(agentInfo, worldInfo, scenarioInfo, moduleManager, developData);
         performanceMonitor = new PerformanceMonitor();
-        dynamicPoliceAgents = new ArrayList<>();
+        lastClearedTime = new HashMap<>();
+        clearanceProgress = new HashMap<>();
         
         initializeZones();
         logger.info("初始化完成，创建了 " + zones.size() + " 个区域");
@@ -242,7 +264,7 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
             logger.warn("没有可用的警察进行分配");
             return;
         }
-        
+
         // 修改为70%静态/30%动态的比例
         int staticPoliceCount = Math.max(1, (int)(policeForces.size() * 0.7));
         
@@ -322,6 +344,9 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
         // 更新分区状态
         updateZoneStatus();
         
+        // 更新清理进度
+        updateClearanceProgress();
+        
         // 检查是否需要重新平衡
         if (shouldRebalance(currentTime)) {
             logger.info("检测到需要重新平衡区域");
@@ -371,25 +396,34 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
         double blockadeFactor = 0.0;
         double trappedHumansFactor = 0.0;
         double roadFactor = 0.0;
+        double criticalRoadFactor = 0.0;
         
         // 计算路障因子 - 对路障数量更敏感
         int blockadeCount = zone.getBlockades().size();
-        blockadeFactor = blockadeCount * 0.2;  // 增加权重从0.15到0.2
+        blockadeFactor = blockadeCount * 0.2;  // 每个路障提供0.2的基础优先级
         
         // 计算被困智能体因子 - 高权重
         int trappedCount = zone.getTrappedHumans() != null ? zone.getTrappedHumans().size() : 0;
-        trappedHumansFactor = trappedCount * 0.6;  // 增加权重从0.5到0.6
+        trappedHumansFactor = trappedCount * 0.6;  // 每个被困智能体提供0.6的高优先级
         
         // 计算道路因子 - 道路越多，潜在清障价值越高
         int roadCount = zone.getRoads().size();
-        roadFactor = Math.log10(roadCount + 1) * 0.15;  // 增加权重从0.1到0.15
+        roadFactor = Math.log10(roadCount + 1) * 0.15;  // 使用对数避免道路数量过大导致权重过高
+        
+        // 计算关键道路因子 - 显著提高区域优先级
+        int criticalRoadCount = countCriticalRoadsInZone(zone);
+        criticalRoadFactor = criticalRoadCount * CRITICAL_ROAD_BONUS;
+        
+        // 检查区域是否包含关键设施附近的路障
+        double facilityBonus = calculateFacilityBonus(zone);
 
         // 警察利用率因子 - 警察越少，优先级越高
         double policeCount = zone.getPoliceCount();
         double policeFactor = policeCount == 0 ? 0.5 : Math.max(0, 0.3 - (0.07 * policeCount));  // 增加权重
         
         // 组合所有因素
-        double finalPriority = blockadeFactor + trappedHumansFactor + roadFactor + policeFactor;
+        double finalPriority = blockadeFactor + trappedHumansFactor + roadFactor + 
+                              criticalRoadFactor + facilityBonus + policeFactor;
         
         // 确保优先级有意义的范围
         finalPriority = Math.max(0.1, finalPriority);
@@ -399,10 +433,46 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
                     "路障因子=" + blockadeFactor + 
                     ", 被困智能体因子=" + trappedHumansFactor + 
                     ", 道路因子=" + roadFactor + 
+                    ", 关键道路因子=" + criticalRoadFactor + 
+                    ", 设施奖励=" + facilityBonus + 
                     ", 警察因子=" + policeFactor + 
                     ", 总优先级=" + finalPriority);
         
         return finalPriority;
+    }
+    
+    // 计算区域内关键道路数量
+    private int countCriticalRoadsInZone(PoliceZone zone) {
+        int count = 0;
+        for (EntityID roadID : zone.getRoads()) {
+            if (criticalRoads.contains(roadID)) {
+                count++;
+            }
+        }
+        return count;
+    }
+    
+    // 计算区域内关键设施奖励
+    private double calculateFacilityBonus(PoliceZone zone) {
+        double bonus = 0.0;
+        
+        // 检查区域内的道路是否靠近重要设施
+        for (EntityID roadID : zone.getRoads()) {
+            StandardEntity roadEntity = worldInfo.getEntity(roadID);
+            if (roadEntity instanceof Road) {
+                Road road = (Road) roadEntity;
+                for (EntityID neighborID : road.getNeighbours()) {
+                    StandardEntity neighbor = worldInfo.getEntity(neighborID);
+                    if (neighbor instanceof Refuge) {
+                        bonus += REFUGE_VICINITY_BONUS;
+                    } else if (neighbor instanceof Hydrant) {
+                        bonus += HYDRANT_BONUS;
+                    }
+                }
+            }
+        }
+        
+        return Math.min(1.0, bonus); // 最大奖励为1.0
     }
     
     private boolean shouldRebalance(int currentTime) {
@@ -551,65 +621,233 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
         List<Map.Entry<PoliceZone, Double>> sortedZones = new ArrayList<>(zonePriorities.entrySet());
         sortedZones.sort(Map.Entry.<PoliceZone, Double>comparingByValue().reversed());
         
+        // 计算总优先级
+        double totalPriority = zonePriorities.values().stream()
+                .mapToDouble(Double::doubleValue)
+                .sum();
+        
+        // 为每个分区分配动态警察比例
+        Map<PoliceZone, Integer> zoneAllocations = new HashMap<>();
+        int remainingPolice = dynamicPoliceAgents.size();
+        
         logger.debug("按优先级排序的区域: " + 
                    sortedZones.stream()
                    .map(e -> "区域" + e.getKey().getZoneId() + "=" + String.format("%.2f", e.getValue()))
                    .reduce((a, b) -> a + ", " + b)
                    .orElse("无"));
         
-        // 为动态警察分配任务 - 优先考虑高优先级区域
-        for (Map.Entry<PoliceZone, Double> entry : sortedZones) {
+        // 第一轮分配 - 根据优先级分配警察数量
+            for (Map.Entry<PoliceZone, Double> entry : sortedZones) {
+                PoliceZone zone = entry.getKey();
+            double zonePriority = entry.getValue();
+            
+            // 计算应分配的警察数量
+            double proportion = zonePriority / Math.max(0.001, totalPriority);
+            int allocation = (int)Math.ceil(proportion * dynamicPoliceAgents.size());
+            
+            // 确保不会分配过多
+            allocation = Math.min(allocation, remainingPolice);
+            allocation = Math.max(1, allocation); // 至少分配1个
+            
+            zoneAllocations.put(zone, allocation);
+            remainingPolice -= allocation;
+            
+            // 如果已经没有剩余警察，跳出循环
+            if (remainingPolice <= 0) {
+                        break;
+            }
+        }
+        
+        // 第二轮 - 实际分配任务
+        for (Map.Entry<PoliceZone, Integer> entry : zoneAllocations.entrySet()) {
             PoliceZone zone = entry.getKey();
+            int targetCount = entry.getValue();
             
-            // 计算应分配给此区域的动态警察数量（基于优先级权重）
-            double normalizedPriority = entry.getValue() / zonePriorities.values().stream()
-                                      .mapToDouble(Double::doubleValue)
-                                      .sum();
+            logger.debug("计划为区域 " + zone.getZoneId() + " 分配 " + targetCount + " 名动态警察");
             
-            int allocatedCount = Math.max(1, (int)Math.round(normalizedPriority * dynamicPoliceAgents.size()));
-            allocatedCount = Math.min(allocatedCount, dynamicPoliceAgents.size());
+            // 获取区域内的所有路障
+            List<EntityID> zoneBlockades = new ArrayList<>(zone.getBlockades());
             
-            logger.debug("计划为区域 " + zone.getZoneId() + " 分配 " + allocatedCount + 
-                       " 名动态警察，优先级权重: " + normalizedPriority);
+            // 首先分配关键道路上的路障
+            List<EntityID> criticalBlockades = getCriticalBlockadesInZone(zone);
             
-            // 尝试分配指定数量的动态警察到此区域
-            int actualCount = 0;
-            for (EntityID policeID : dynamicPoliceAgents) {
-                if (!allocationResult.containsKey(policeID)) {
-                    List<EntityID> blockades = zone.getBlockades();
-                    if (!blockades.isEmpty()) {
-                        EntityID target = findNearestBlockadeInZone(policeID, blockades);
-                        if (target != null) {
-                            allocationResult.put(policeID, target);
-                            logger.debug("为动态警察 " + policeID + " 分配区域 " + zone.getZoneId() + " 的路障 " + target);
-                            
-                            actualCount++;
-                            if (actualCount >= allocatedCount) {
-                                break;
-                            }
+            // 实际分配
+            int allocatedCount = 0;
+            
+            // 1. 先处理关键路障
+            for (EntityID blockadeID : criticalBlockades) {
+                if (allocatedCount >= targetCount) break;
+                
+                // 找到最近的可用警察
+                EntityID nearestPolice = findNearestAvailableDynamicPolice(blockadeID);
+                if (nearestPolice != null) {
+                    allocationResult.put(nearestPolice, blockadeID);
+                    allocatedCount++;
+                    logger.debug("为关键路障 " + blockadeID + " 分配动态警察 " + nearestPolice);
+                }
+            }
+            
+            // 2. 然后处理其他路障
+            for (EntityID blockadeID : zoneBlockades) {
+                if (criticalBlockades.contains(blockadeID)) continue; // 跳过已分配的关键路障
+                if (allocatedCount >= targetCount) break;
+                
+                // 找到最近的可用警察
+                EntityID nearestPolice = findNearestAvailableDynamicPolice(blockadeID);
+                if (nearestPolice != null) {
+                    allocationResult.put(nearestPolice, blockadeID);
+                    allocatedCount++;
+                    logger.debug("为普通路障 " + blockadeID + " 分配动态警察 " + nearestPolice);
+                }
+            }
+            
+            logger.debug("区域 " + zone.getZoneId() + " 实际分配了 " + allocatedCount + " 名动态警察");
+        }
+        
+        // 确保所有动态警察都有任务 - 未分配的分配给任何可用路障
+        for (EntityID policeID : dynamicPoliceAgents) {
+            if (!allocationResult.containsKey(policeID)) {
+                // 搜索所有区域中未分配的路障
+                EntityID target = findNearestUnassignedBlockade(policeID);
+                if (target != null) {
+                    allocationResult.put(policeID, target);
+                    logger.debug("为未分配的动态警察 " + policeID + " 分配路障 " + target);
+                }
+            }
+        }
+    }
+    
+    // 获取区域内关键道路上的路障
+    private List<EntityID> getCriticalBlockadesInZone(PoliceZone zone) {
+        List<EntityID> criticalBlockades = new ArrayList<>();
+        
+        for (EntityID blockadeID : zone.getBlockades()) {
+            Blockade blockade = (Blockade) worldInfo.getEntity(blockadeID);
+            if (blockade != null && blockade.isPositionDefined()) {
+                EntityID roadID = blockade.getPosition();
+                if (criticalRoads.contains(roadID)) {
+                    criticalBlockades.add(blockadeID);
+                }
+            }
+        }
+        
+        return criticalBlockades;
+    }
+    
+    // 找到最近的可用动态警察
+    private EntityID findNearestAvailableDynamicPolice(EntityID targetID) {
+        double minDistance = Double.MAX_VALUE;
+        EntityID nearestPolice = null;
+        
+        StandardEntity target = worldInfo.getEntity(targetID);
+        
+        for (EntityID policeID : dynamicPoliceAgents) {
+            // 跳过已分配任务的警察
+            if (allocationResult.containsKey(policeID)) {
+                continue;
+            }
+            
+            StandardEntity police = worldInfo.getEntity(policeID);
+            double distance = calculateDistance(police, target);
+            
+            if (distance < minDistance) {
+                minDistance = distance;
+                nearestPolice = policeID;
+            }
+        }
+        
+        return nearestPolice;
+    }
+    
+    // 找到最近的未分配路障
+    private EntityID findNearestUnassignedBlockade(EntityID policeID) {
+        double minDistance = Double.MAX_VALUE;
+        EntityID nearestBlockade = null;
+        
+        StandardEntity police = worldInfo.getEntity(policeID);
+        
+        // 检查所有区域的路障
+        for (PoliceZone zone : zones) {
+            for (EntityID blockadeID : zone.getBlockades()) {
+                // 跳过已分配的路障
+                if (allocationResult.containsValue(blockadeID)) {
+                    continue;
+                }
+                
+                StandardEntity blockade = worldInfo.getEntity(blockadeID);
+                double distance = calculateDistance(police, blockade);
+                
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    nearestBlockade = blockadeID;
+                }
+            }
+        }
+        
+        return nearestBlockade;
+    }
+    
+    // 覆盖原有的方法，优化静态警察分配
+    private void allocateStaticPolice() {
+        // 按区域优先级排序
+        zones.sort(Comparator.comparingDouble(PoliceZone::getPriority).reversed());
+        
+        for (PoliceZone zone : zones) {
+            List<EntityID> zoneBlockades = zone.getBlockades();
+            List<EntityID> zonePolice = zone.getPoliceAgents();
+            
+            if (!zoneBlockades.isEmpty() && !zonePolice.isEmpty()) {
+                // 获取区域内的关键路障
+                List<EntityID> criticalBlockades = getCriticalBlockadesInZone(zone);
+                
+                // 首先处理关键路障
+                for (EntityID blockadeID : criticalBlockades) {
+                    // 找到最近的未分配警察
+                    EntityID nearestPolice = findNearestAvailableStatic(blockadeID, zonePolice);
+                    if (nearestPolice != null) {
+                        allocationResult.put(nearestPolice, blockadeID);
+                        logger.debug("为关键路障 " + blockadeID + " 分配静态警察 " + nearestPolice);
+                    }
+                }
+                
+                // 然后处理其他路障
+                for (EntityID blockadeID : zoneBlockades) {
+                    if (allocationResult.containsValue(blockadeID)) continue; // 跳过已分配的路障
+                    
+                    // 找到最近的未分配警察
+                    EntityID nearestPolice = findNearestAvailableStatic(blockadeID, zonePolice);
+                    if (nearestPolice != null) {
+                        allocationResult.put(nearestPolice, blockadeID);
+                        logger.debug("为普通路障 " + blockadeID + " 分配静态警察 " + nearestPolice);
                         }
                     }
                 }
             }
         }
         
-        // 确保所有动态警察都有任务
-        for (EntityID policeID : dynamicPoliceAgents) {
-            if (!allocationResult.containsKey(policeID)) {
-                // 为未分配的动态警察寻找任务
-                for (PoliceZone zone : zones) {
-                    List<EntityID> blockades = zone.getBlockades();
-                    if (!blockades.isEmpty()) {
-                        EntityID target = findNearestBlockadeInZone(policeID, blockades);
-                        if (target != null) {
-                            allocationResult.put(policeID, target);
-                            logger.debug("为未分配的动态警察 " + policeID + " 分配区域 " + zone.getZoneId() + " 的路障 " + target);
-                            break;
-                        }
-                    }
-                }
+    // 找到最近的可用静态警察
+    private EntityID findNearestAvailableStatic(EntityID targetID, List<EntityID> policeList) {
+        double minDistance = Double.MAX_VALUE;
+        EntityID nearestPolice = null;
+        
+        StandardEntity target = worldInfo.getEntity(targetID);
+        
+        for (EntityID policeID : policeList) {
+            // 跳过动态警察和已分配任务的警察
+            if (dynamicPoliceAgents.contains(policeID) || allocationResult.containsKey(policeID)) {
+                continue;
+            }
+            
+        StandardEntity police = worldInfo.getEntity(policeID);
+            double distance = calculateDistance(police, target);
+            
+                if (distance < minDistance) {
+                    minDistance = distance;
+                nearestPolice = policeID;
             }
         }
+        
+        return nearestPolice;
     }
     
     private void calculateAllocation() {
@@ -651,247 +889,6 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
         allocateDynamicPolice();
         
         logger.info("任务分配完成，共分配 " + allocationResult.size() + " 个任务");
-    }
-    
-    private void allocateStaticPolice() {
-        // 按区域优先级排序
-        zones.sort(Comparator.comparingDouble(PoliceZone::getPriority).reversed());
-        
-        for (PoliceZone zone : zones) {
-            List<EntityID> zoneBlockades = zone.getBlockades();
-            List<EntityID> zonePolice = zone.getPoliceAgents();
-            
-            if (!zoneBlockades.isEmpty() && !zonePolice.isEmpty()) {
-                // 为区域内的警察分配任务
-                for (EntityID policeID : zonePolice) {
-                    if (!allocationResult.containsKey(policeID) && !dynamicPoliceAgents.contains(policeID)) {
-                        EntityID target = findNearestBlockadeInZone(policeID, zoneBlockades);
-                        if (target != null) {
-                            allocationResult.put(policeID, target);
-                            logger.debug("为静态警察 " + policeID + " 分配路障 " + target);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    private void allocateDynamicPolice() {
-        if (dynamicPoliceAgents.isEmpty()) {
-            logger.debug("没有动态警察可分配");
-            return;
-        }
-        
-        // 计算每个区域的评估值
-        Map<PoliceZone, Double> zoneEvaluations = calculateZoneEvaluations();
-        
-        // 按评估值排序区域
-        List<Map.Entry<PoliceZone, Double>> sortedZones = new ArrayList<>(zoneEvaluations.entrySet());
-        sortedZones.sort(Map.Entry.<PoliceZone, Double>comparingByValue().reversed());
-        
-
-        for (EntityID policeID : dynamicPoliceAgents) {
-            if (allocationResult.containsKey(policeID)) {
-                continue;
-            }
-            
-            // 选择评估值最高的区域
-            for (Map.Entry<PoliceZone, Double> entry : sortedZones) {
-                PoliceZone zone = entry.getKey();
-                List<EntityID> zoneBlockades = zone.getBlockades();
-                
-                if (!zoneBlockades.isEmpty()) {
-                    EntityID target = findNearestBlockadeInZone(policeID, zoneBlockades);
-                    if (target != null) {
-                        allocationResult.put(policeID, target);
-                        logger.debug("为动态警察 " + policeID + " 分配区域 " + zone.getZoneId() + " 的路障 " + target + ", 区域评估值: " + entry.getValue());
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    
-    private Map<PoliceZone, Double> calculateZoneEvaluations() {
-        Map<PoliceZone, Double> evaluations = new HashMap<>();
-        
-        for (PoliceZone zone : zones) {
-            // 实现线性加权评价模型
-            double evaluation = 0.0;
-            
-            // 影响因子权重
-            final double W_REFUGE = 0.15;       // countref - 避难所数量 (增加权重)
-            // 移除火灾权重
-            final double W_FB = 0.15;           // countfb - 消防队数量 (增加权重)
-            final double W_AT = 0.15;           // countat - 救护队数量 (增加权重)
-            final double W_PF = -0.15;          // countpf - 警察数量（负权重，警察越多评价越低）(增加权重)
-            final double W_CIV = 0.15;          // countciv - 市民数量 (增加权重)
-            final double W_DIST = -0.15;        // distome - 与自身距离（负权重，距离越远评价越低）(增加权重)
-            final double W_BLOCKREP = 0.2;      // blockrep - 完全性路障报告数 (增加权重)
-            final double W_LOCKEDREP = 0.25;    // lockedrep - 被困智能体报告数 (增加权重)
-            final double W_PATH = 0.15;         // countpath - 道路数量 (增加权重)
-            
-            // 计算各因素值
-            double countref = countEntitiesInZone(zone, StandardEntityURN.REFUGE);
-            double countfb = countEntitiesInZone(zone, StandardEntityURN.FIRE_BRIGADE);
-            double countat = countEntitiesInZone(zone, StandardEntityURN.AMBULANCE_TEAM);
-            double countpf = zone.getPoliceCount();
-            double countciv = countEntitiesInZone(zone, StandardEntityURN.CIVILIAN);
-            double distome = calculateAverageDistanceToZone(zone);
-            double blockrep = zone.getBlockades().size();
-            double lockedrep = countTrappedHumansInZone(zone);
-            double countpath = zone.getRoads().size();
-            
-            // 归一化处理
-            countref = normalize(countref, 0, 5);
-            countfb = normalize(countfb, 0, 10);
-            countat = normalize(countat, 0, 10);
-            countpf = normalize(countpf, 0, 10);
-            countciv = normalize(countciv, 0, 50);
-            distome = normalize(distome, 0, 100000);
-            blockrep = normalize(blockrep, 0, 30);
-            lockedrep = normalize(lockedrep, 0, 10);
-            countpath = normalize(countpath, 0, 100);
-            
-            // 线性加权求和
-            evaluation = W_REFUGE * countref +
-                         W_FB * countfb +
-                         W_AT * countat +
-                         W_PF * countpf +
-                         W_CIV * countciv +
-                         W_DIST * distome +
-                         W_BLOCKREP * blockrep +
-                         W_LOCKEDREP * lockedrep +
-                         W_PATH * countpath;
-            
-            evaluations.put(zone, evaluation);
-            logger.debug("区域 " + zone.getZoneId() + " 评估值: " + evaluation);
-        }
-        
-        return evaluations;
-    }
-    
-    // 归一化函数，将值映射到0-1之间
-    private double normalize(double value, double min, double max) {
-        if (max == min) return 0.5;
-        return Math.min(1.0, Math.max(0.0, (value - min) / (max - min)));
-    }
-    
-    private double countEntitiesInZone(PoliceZone zone, StandardEntityURN type) {
-        int count = 0;
-        List<EntityID> roadIDs = zone.getRoads();
-        
-        for (EntityID roadID : roadIDs) {
-            Road road = (Road) worldInfo.getEntity(roadID);
-            if (road != null) {
-                for (EntityID nearbyID : road.getNeighbours()) {
-                    StandardEntity entity = worldInfo.getEntity(nearbyID);
-                    if (entity.getStandardURN() == type) {
-                        count++;
-                    }
-                }
-            }
-        }
-        
-        return count;
-    }
-    
-    private double calculateAverageDistanceToZone(PoliceZone zone) {
-        // 优化计算方式，减少重复计算
-        if (zone == null || zone.getRoads().isEmpty() || dynamicPoliceAgents.isEmpty()) {
-            return Double.MAX_VALUE;
-        }
-
-        // 不使用中心点，直接计算道路平均坐标
-        double centerX = 0, centerY = 0;
-        int roadCount = 0;
-        
-        for (EntityID roadID : zone.getRoads()) {
-            StandardEntity roadEntity = worldInfo.getEntity(roadID);
-            if (roadEntity instanceof Road) {
-                Road road = (Road) roadEntity;
-                centerX += road.getX();
-                centerY += road.getY();
-                roadCount++;
-            }
-        }
-        
-        if (roadCount == 0) {
-            return Double.MAX_VALUE;
-        }
-        
-        // 计算平均中心点
-        centerX /= roadCount;
-        centerY /= roadCount;
-        
-        double totalDistance = 0.0;
-        int count = 0;
-        
-        for (EntityID dynamicPoliceID : dynamicPoliceAgents) {
-            StandardEntity police = worldInfo.getEntity(dynamicPoliceID);
-            if (police != null && police instanceof Human) {
-                Human human = (Human) police;
-                if (human.isXDefined() && human.isYDefined()) {
-                    // 使用简单的欧几里得距离计算，而不是对每条道路计算路径
-                    double distance = Math.sqrt(
-                        Math.pow(human.getX() - centerX, 2) + 
-                        Math.pow(human.getY() - centerY, 2)
-                    );
-                    totalDistance += distance;
-                    count++;
-                }
-            }
-        }
-        
-        return count > 0 ? totalDistance / count : Double.MAX_VALUE;
-    }
-    
-    private double countTrappedHumansInZone(PoliceZone zone) {
-        int count = 0;
-        List<EntityID> roadIDs = zone.getRoads();
-        
-        for (EntityID roadID : roadIDs) {
-            StandardEntity roadEntity = worldInfo.getEntity(roadID);
-            if (roadEntity instanceof Road) {
-                Road road = (Road) roadEntity;
-                if (road.isBlockadesDefined()) {
-                    Collection<Blockade> blockades = worldInfo.getBlockades(road.getID());
-                    if (blockades != null && !blockades.isEmpty()) {
-                        for (StandardEntity entity : worldInfo.getAllEntities()) {
-                            if (entity instanceof Human) {
-                                Human human = (Human) entity;
-                                if (human.getPosition().equals(road.getID())) {
-                                    count++;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        return count;
-    }
-    
-    private EntityID findNearestBlockadeInZone(EntityID policeID, List<EntityID> blockades) {
-        StandardEntity police = worldInfo.getEntity(policeID);
-        if (police == null) return null;
-        
-        EntityID nearest = null;
-        double minDistance = Double.MAX_VALUE;
-        
-        for (EntityID blockadeID : blockades) {
-            StandardEntity blockade = worldInfo.getEntity(blockadeID);
-            if (blockade != null && !allocationResult.containsValue(blockadeID)) {
-                double distance = calculateDistance(police, blockade);
-                if (distance < minDistance) {
-                    minDistance = distance;
-                    nearest = blockadeID;
-                }
-            }
-        }
-        
-        return nearest;
     }
     
     private void processHighPriorityTargets(List<StandardEntity> police) {
@@ -936,67 +933,67 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
         double distance = Double.MAX_VALUE;
 
         try {
-            // 如果实体是Blockade类型，获取其所在的Road
-            if (entity1 instanceof Blockade) {
-                EntityID roadID = ((Blockade) entity1).getPosition();
-                if (roadID != null) {
-                    entity1 = worldInfo.getEntity(roadID);
-                }
+        // 如果实体是Blockade类型，获取其所在的Road
+        if (entity1 instanceof Blockade) {
+            EntityID roadID = ((Blockade) entity1).getPosition();
+            if (roadID != null) {
+                entity1 = worldInfo.getEntity(roadID);
             }
-            if (entity2 instanceof Blockade) {
-                EntityID roadID = ((Blockade) entity2).getPosition();
-                if (roadID != null) {
-                    entity2 = worldInfo.getEntity(roadID);
-                }
+        }
+        if (entity2 instanceof Blockade) {
+            EntityID roadID = ((Blockade) entity2).getPosition();
+            if (roadID != null) {
+                entity2 = worldInfo.getEntity(roadID);
             }
-    
-            // 如果两个实体都是Area类型，使用路径规划计算距离
-            if (entity1 instanceof Area && entity2 instanceof Area) {
+        }
+
+        // 如果两个实体都是Area类型，使用路径规划计算距离
+        if (entity1 instanceof Area && entity2 instanceof Area) {
+            List<EntityID> path = pathPlanner
+                .setFrom(entity1.getID())
+                .setDestination(entity2.getID())
+                .calc()
+                .getResult();
+                
+            if (path != null && !path.isEmpty()) {
+                    distance = pathPlanner.getDistance();
+            }
+        }
+            else if (entity1 instanceof Human || entity2 instanceof Human) {
+            // 获取Human的位置
+            StandardEntity location1 = entity1 instanceof Human ? 
+                worldInfo.getEntity(((Human) entity1).getPosition()) : entity1;
+            StandardEntity location2 = entity2 instanceof Human ? 
+                worldInfo.getEntity(((Human) entity2).getPosition()) : entity2;
+            
+            if (location1 instanceof Area && location2 instanceof Area) {
                 List<EntityID> path = pathPlanner
-                    .setFrom(entity1.getID())
-                    .setDestination(entity2.getID())
+                    .setFrom(location1.getID())
+                    .setDestination(location2.getID())
                     .calc()
                     .getResult();
-                    
-                if (path != null && !path.isEmpty()) {
-                    distance = pathPlanner.getDistance();
-                }
-            }
-            else if (entity1 instanceof Human || entity2 instanceof Human) {
-                // 获取Human的位置
-                StandardEntity location1 = entity1 instanceof Human ? 
-                    worldInfo.getEntity(((Human) entity1).getPosition()) : entity1;
-                StandardEntity location2 = entity2 instanceof Human ? 
-                    worldInfo.getEntity(((Human) entity2).getPosition()) : entity2;
                 
-                if (location1 instanceof Area && location2 instanceof Area) {
-                    List<EntityID> path = pathPlanner
-                        .setFrom(location1.getID())
-                        .setDestination(location2.getID())
-                        .calc()
-                        .getResult();
-                    
-                    if (path != null && !path.isEmpty()) {
+                if (path != null && !path.isEmpty()) {
                         distance = pathPlanner.getDistance();
-                    }
                 }
             }
-    
+        }
+
             // 如果以上方法失败，使用欧几里得距离
             if (distance == Double.MAX_VALUE) {
-                int x1 = getEntityX(entity1);
-                int y1 = getEntityY(entity1);
-                int x2 = getEntityX(entity2);
-                int y2 = getEntityY(entity2);
-                
-                if (x1 != Integer.MIN_VALUE && y1 != Integer.MIN_VALUE && 
-                    x2 != Integer.MIN_VALUE && y2 != Integer.MIN_VALUE) {
-                    double dx = x2 - x1;
-                    double dy = y2 - y1;
+        int x1 = getEntityX(entity1);
+        int y1 = getEntityY(entity1);
+        int x2 = getEntityX(entity2);
+        int y2 = getEntityY(entity2);
+        
+        if (x1 != Integer.MIN_VALUE && y1 != Integer.MIN_VALUE && 
+            x2 != Integer.MIN_VALUE && y2 != Integer.MIN_VALUE) {
+            double dx = x2 - x1;
+            double dy = y2 - y1;
                     distance = Math.sqrt(dx * dx + dy * dy);
-                }
+        }
                 else if (entity1.getID() != null && entity2.getID() != null) {
-                    // 如果以上方法都失败，使用世界信息中的距离
+        // 如果以上方法都失败，使用世界信息中的距离
                     int dist = worldInfo.getDistance(entity1.getID(), entity2.getID());
                     if (dist != -1) {
                         distance = dist;
@@ -1184,18 +1181,125 @@ public class CSUPoliceTargetAllocator extends adf.core.component.module.complex.
             
             // 只在关键时刻记录性能信息
             if (currentTime % 50 == 0) {
-                logger.logPerformance("平均响应时间", avgResponseTime);
-                logger.logPerformance("平均利用率", avgUtilization);
-                logger.logPerformance("平均覆盖率", avgCoverage);
+            logger.logPerformance("平均响应时间", avgResponseTime);
+            logger.logPerformance("平均利用率", avgUtilization);
+            logger.logPerformance("平均覆盖率", avgCoverage);
             }
         }
         
         public void analyzePerformance() {
             // 性能分析仅在某些关键时刻执行
             if (agentInfo.getTime() % 100 == 0) {
-                logger.info("开始分析性能数据...");
-                // 实现性能分析逻辑
+            logger.info("开始分析性能数据...");
+            // 实现性能分析逻辑
             }
+        }
+    }
+    
+    // 更新路障清理进度
+    private void updateClearanceProgress() {
+        int currentTime = agentInfo.getTime();
+        
+        // 遍历所有路障检查清理进度
+        for (StandardEntity entity : worldInfo.getEntitiesOfType(StandardEntityURN.BLOCKADE)) {
+            Blockade blockade = (Blockade) entity;
+            EntityID blockadeID = blockade.getID();
+            
+            // 记录上次检查的修复成本
+            double previousCost = clearanceProgress.getOrDefault(blockadeID, (double)blockade.getRepairCost());
+            
+            // 当前修复成本
+            double currentCost = blockade.getRepairCost();
+            
+            // 如果修复成本减少，说明正在被清理
+            if (currentCost < previousCost) {
+                lastClearedTime.put(blockadeID, currentTime);
+                clearanceProgress.put(blockadeID, currentCost);
+                
+                // 记录清理速度
+                double clearRate = (previousCost - currentCost) / Math.max(1, currentTime - lastClearedTime.getOrDefault(blockadeID, currentTime-1));
+                logger.debug("路障 " + blockadeID + " 清理进度: " + String.format("%.2f%%", (1 - currentCost/blockade.getApexes().length) * 100) + 
+                            ", 速度: " + String.format("%.2f", clearRate) + " 点/时间步");
+            }
+            // 如果是新路障，初始化进度
+            else if (!clearanceProgress.containsKey(blockadeID)) {
+                clearanceProgress.put(blockadeID, currentCost);
+            }
+        }
+    }
+    
+    // 识别关键道路方法
+    private void identifyCriticalRoads() {
+        logger.info("开始识别关键道路...");
+        Map<EntityID, Integer> roadConnections = new HashMap<>();
+        Map<EntityID, Set<StandardEntityURN>> nearbyFacilities = new HashMap<>();
+        List<StandardEntity> roads = new ArrayList<>(worldInfo.getEntitiesOfType(StandardEntityURN.ROAD));
+        
+        // 统计每条道路的连接数和附近设施
+        for (StandardEntity entity : roads) {
+            if (entity instanceof Road) {
+                Road road = (Road) entity;
+                EntityID roadID = road.getID();
+                
+                // 连接数
+                int connections = road.getNeighbours().size();
+                roadConnections.put(roadID, connections);
+                
+                // 检查附近设施
+                Set<StandardEntityURN> facilities = new HashSet<>();
+                for (EntityID neighborID : road.getNeighbours()) {
+                    StandardEntity neighbor = worldInfo.getEntity(neighborID);
+                    if (neighbor instanceof Building) {
+                        facilities.add(neighbor.getStandardURN());
+                    }
+                }
+                nearbyFacilities.put(roadID, facilities);
+                
+                // 根据连接数和附近设施判断是否为关键道路
+                if (connections >= 4 || 
+                    facilities.contains(StandardEntityURN.REFUGE) ||
+                    facilities.contains(StandardEntityURN.FIRE_STATION) ||
+                    facilities.contains(StandardEntityURN.AMBULANCE_CENTRE) ||
+                    facilities.contains(StandardEntityURN.POLICE_OFFICE) ||
+                    facilities.contains(StandardEntityURN.HYDRANT)) {
+                    
+                    criticalRoads.add(roadID);
+                    logger.debug("识别关键道路: " + roadID + ", 连接数: " + connections + 
+                                ", 附近设施: " + facilities);
+                }
+            }
+        }
+        
+        // 贪婪地添加一些连接关键设施的道路
+        for (StandardEntity entity : worldInfo.getEntitiesOfType(StandardEntityURN.REFUGE)) {
+            addConnectingRoads((Building)entity);
+        }
+        
+        for (StandardEntity entity : worldInfo.getEntitiesOfType(StandardEntityURN.HYDRANT)) {
+            addConnectingRoads((Building)entity);
+        }
+        
+        logger.info("关键道路识别完成，共识别 " + criticalRoads.size() + " 条关键道路");
+    }
+    
+    // 添加连接关键设施的道路
+    private void addConnectingRoads(Building building) {
+        for (EntityID neighborID : building.getNeighbours()) {
+            StandardEntity neighbor = worldInfo.getEntity(neighborID);
+            if (neighbor instanceof Road) {
+                Road road = (Road) neighbor;
+                criticalRoads.add(road.getID());
+                
+                // 再向外扩展一层
+                for (EntityID nextRoadID : road.getNeighbours()) {
+                    StandardEntity nextEntity = worldInfo.getEntity(nextRoadID);
+                    if (nextEntity instanceof Road) {
+                        criticalRoads.add(nextRoadID);
+                    }
+                }
+            }
+        }
+    }
         }
     }
 } 

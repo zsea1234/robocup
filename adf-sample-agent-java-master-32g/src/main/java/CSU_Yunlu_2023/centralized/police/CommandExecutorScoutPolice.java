@@ -49,15 +49,15 @@ public class CommandExecutorScoutPolice extends CommandExecutor<CommandScout> {
 	        switch  (scenarioInfo.getMode()) {
 	            case PRECOMPUTATION_PHASE:
 	                this.pathPlanning = moduleManager.getModule("CommandExecutorScoutPolice.PathPlanning", "adf.core.sample.module.algorithm.SamplePathPlanning");
-	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorScoutPolice.ActionExtClear", "adf.core.sample.extaction.ActionExtClear");
+	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorScoutPolice.ActionExtClear", "CSU_Yunlu_2023.extaction.pf.ActionExtClear");
 	                break;
 	            case PRECOMPUTED:
 	                this.pathPlanning = moduleManager.getModule("CommandExecutorScoutPolice.PathPlanning", "adf.core.sample.module.algorithm.SamplePathPlanning");
-	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorScoutPolice.ActionExtClear", "adf.core.sample.extaction.ActionExtClear");
+	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorScoutPolice.ActionExtClear", "CSU_Yunlu_2023.extaction.pf.ActionExtClear");
 	                break;
 	            case NON_PRECOMPUTE:
 	                this.pathPlanning = moduleManager.getModule("CommandExecutorScoutPolice.PathPlanning", "adf.core.sample.module.algorithm.SamplePathPlanning");
-	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorScoutPolice.ActionExtClear", "adf.core.sample.extaction.ActionExtClear");
+	                this.actionExtClear = moduleManager.getExtAction("CommandExecutorScoutPolice.ActionExtClear", "CSU_Yunlu_2023.extaction.pf.ActionExtClear");
 	                break;
 	        }
 	    }
