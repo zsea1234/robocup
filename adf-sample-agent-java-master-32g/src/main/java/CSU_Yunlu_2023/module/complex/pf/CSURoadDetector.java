@@ -1,6 +1,7 @@
 package CSU_Yunlu_2023.module.complex.pf;
 
 import CSU_Yunlu_2023.CSUConstants;
+import CSU_Yunlu_2023.world.CSUWorldHelper;
 import CSU_Yunlu_2023.extaction.pf.guidelineHelper;
 import adf.core.agent.communication.MessageManager;
 import adf.core.agent.communication.standard.bundle.MessageUtil;
@@ -69,31 +70,23 @@ public class CSURoadDetector extends RoadDetector {
 	private int times = 0;
 	private Integer Cluster_Range = 0;//聚类的范围，即警察活动的范围
 	private Point2D Cluster_Center = null;//聚类中心坐标
+	private Set<EntityID> targetAreas;
+	private Set<EntityID> unreachableTargets;
+	private CSUWorldHelper worldHelper;
+	private int clusterIndex;
+
 	public CSURoadDetector(AgentInfo ai, WorldInfo wi, ScenarioInfo si, ModuleManager moduleManager, DevelopData developData) {
 		super(ai, wi, si, moduleManager, developData);
-		switch (scenarioInfo.getMode()) {
-			case PRECOMPUTATION_PHASE:
-				this.pathPlanning = moduleManager.getModule("SampleRoadDetector.PathPlanning",
-						CSUConstants.A_STAR_PATH_PLANNING);
-				this.clustering = moduleManager.getModule("SampleRoadDetector.Clustering",
-						"adf.core.sample.module.algorithm.SampleKMeans");
-				break;
-			case PRECOMPUTED:
-				this.pathPlanning = moduleManager.getModule("SampleRoadDetector.PathPlanning",
-						CSUConstants.A_STAR_PATH_PLANNING);
-				this.clustering = moduleManager.getModule("SampleRoadDetector.Clustering",
-						"adf.core.sample.module.algorithm.SampleKMeans");
-				break;
-			case NON_PRECOMPUTE:
-				this.pathPlanning = moduleManager.getModule("SampleRoadDetector.PathPlanning",
-						CSUConstants.A_STAR_PATH_PLANNING);
-				this.clustering = moduleManager.getModule("SampleRoadDetector.Clustering",
-						"adf.core.sample.module.algorithm.SampleKMeans");
-				break;
-		}
+		this.targetAreas = new HashSet<>();
+		this.unreachableTargets = new HashSet<>();
+		this.pathPlanning = moduleManager.getModule("RoadDetector.PathPlanning", "CSU_Yunlu_2023.module.algorithm.AStarPathPlanning");
+		this.clustering = moduleManager.getModule("SampleRoadDetector.Clustering", "CSU_Yunlu_2023.module.algorithm.SampleKMeans");
+		// 使用CSUWorldHelper获取优化后的世界信息
+		this.worldHelper = moduleManager.getModule("WorldHelper.Default", CSUConstants.WORLD_HELPER_DEFAULT);
 		this.sendCivilian = new HashSet<>();
 		registerModule(this.pathPlanning);
 		registerModule(this.clustering);
+		registerModule(this.worldHelper);
 		this.guidelineCreator = moduleManager.getModule("GuidelineCreator.Default", CSUConstants.GUIDE_LINE_CREATOR);
 		this.result = null;
 	}
@@ -277,429 +270,91 @@ public class CSURoadDetector extends RoadDetector {
 
 	@Override
 	public RoadDetector calc() {
-		EntityID positionID = this.agentInfo.getPosition();
-		if(Initial)
-		{
-			Initial = false;
-			if(this.clustering != null) {
-				Collection<StandardEntity> clusterEntities = this.clustering.getClusterEntities(
-															 	this.clustering.getClusterIndex(this.agentInfo.getID()));
-				clusterEntitiesID = this.clustering.getClusterEntityIDs(
-										this.clustering.getClusterIndex(this.agentInfo.getID()));
-				if(clusterEntities != null && clusterEntities.size() > 0){
-					double x_sum = 0, y_sum = 0, number = 0;
-					for(StandardEntity standardEntity : clusterEntities){
-						if(standardEntity instanceof Area)
-						{
-							Area area = (Area) standardEntity;
-							x_sum += area.getX();
-							y_sum += area.getY();
-							number ++;
-						}
-						if(standardEntity instanceof Refuge)//refuge
-						{
-							Target_Road.add(standardEntity.getID());
-						}
-					}
-					Cluster_Center = new Point2D(x_sum/number,y_sum/number);
-					Integer min_dis = Integer.MAX_VALUE;
-					for(StandardEntity standardEntity : clusterEntities){
-						if(standardEntity instanceof Area)
-						{
-							int sum = GetDistance((Area)standardEntity,Cluster_Center);
-							if(sum > Cluster_Range)
-								Cluster_Range = sum;
-							if(sum < min_dis)
-							{
-								min_dis = sum;
-								CenterID = standardEntity.getID();
-							}
-						}
-					}
+		if (this.result != null) {
+			return this;
+		}
+		
+		// 使用世界辅助类获取阻塞的道路
+		Collection<StandardEntity> blockedRoads = getBlockedRoads();
+		
+		if (!blockedRoads.isEmpty()) {
+			// 按距离排序
+			List<EntityID> sortedBlockedRoads = new ArrayList<>();
+			for (StandardEntity entity : blockedRoads) {
+				sortedBlockedRoads.add(entity.getID());
+			}
+			// 使用距离排序器，优先处理最近的阻塞
+			sortedBlockedRoads.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID()));
+			
+			// 找到最近的可达阻塞
+			for (EntityID roadID : sortedBlockedRoads) {
+				if (unreachableTargets.contains(roadID)) {
+					continue;
+				}
+				this.pathPlanning.setFrom(this.agentInfo.getPosition());
+				this.pathPlanning.setDestination(roadID);
+				List<EntityID> path = this.pathPlanning.calc().getResult();
+				if (path != null && !path.isEmpty()) {
+					this.result = roadID;
+					return this;
+				} else {
+					unreachableTargets.add(roadID);
 				}
 			}
 		}
-		this.update_roads();
-//		this.topLevelBlockedRoad.removeAll(SOSroad);
-		this.halfTopLevelBlockedRoad.removeAll(SOSroad);
-		this.midLevelBlockedRoad.removeAll(SOSroad);
-		this.halfLowLevelBlockedRoad.removeAll(SOSroad);
-		this.lowLevelBlockedRoad.removeAll(SOSroad);
-//		this.firstLevelBlockedRoad.removeAll(SOSroad);
-		StandardEntity position = this.worldInfo.getEntity(this.agentInfo.getPosition());
-		if (position instanceof Road || position instanceof Hydrant) {
-			Road road = (Road) position;
-			if (this.isRoadPassable(road)) {
-				this.noNeedToClear.add(road.getID());
-			}
-		}
-		if(!Cluster_Flag && (this.clusterEntitiesID.contains(positionID) || CenterID == null))//到聚类中了
-		{
-			result = null;
-			Cluster_Flag = true;
-		}
-		if (agentInfo.getTime() > scenarioInfo.getKernelAgentsIgnoreuntil() + 5 && !this.arrive_flag)//优先最高refuge
-			this.Get_To_Refuge(positionID);
-
-		if (nearest_refuge != null && this.result != null && !this.arrive_flag) {
-			if (nearest_refuge.getID().getValue() == this.result.getValue()) {
-				return this;
-			}
-		}
-		//TOPTOPRoad
-		if (this.result != null && this.TOPTOPRoad.contains(this.result)) {
-			if (this.TOPTOPRoad.contains(this.agentInfo.getPosition())) {
-				this.TOPTOPRoad.remove(this.agentInfo.getPosition());
-				this.noNeedToClear.add(this.agentInfo.getID());
-			}
-			return this;
-		}
-
-		if (!this.TOPTOPRoad.isEmpty()) {
-			List<EntityID> sortList = new ArrayList<>(this.TOPTOPRoad);
-			sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-//			System.out.println("SOSOSOSOSO:" + sortList.get(0).getValue());
-			return this.getPathTo(positionID, sortList.get(0));
-		}
-		if(!Cluster_Flag)
-		{
-			result = CenterID;
-			return this;
-		}
-//		if(this.agentInfo.getID().getValue() == 1962675462) {
-////			System.out.println("topsize:" + this.topLevelBlockedRoad.size());
-////			System.out.println("halftopsize:" + this.halfTopLevelBlockedRoad.size());
-////			System.out.println("midsize:" + this.midLevelBlockedRoad.size());
-////			System.out.println("lowsize:" + this.lowLevelBlockedRoad.size());
-////			System.out.println("targetRoadsize:" + this.targetAreas.size());
-//			if(this.result!=null){
-//				System.out.println("result:"+this.result.getValue());
-////				if(this.noNeedToClear.contains(this.result)){
-////					System.out.println("noneedtoclearhas:"+this.result);
-////				}
-////				if(this.topLevelBlockedRoad.contains(this.result)){
-////					System.out.println("TOPTOPTOP");
-////				}
-////				if(this.halfTopLevelBlockedRoad.contains(this.result)){
-////					System.out.println("hththt");
-////				}
-////				if(this.midLevelBlockedRoad.contains(this.result)){
-////					System.out.println("mmmmmmmmm");
-////				}
-////				if(this.halfLowLevelBlockedRoad.contains(this.result)){
-////					System.out.println("hlhlhlhlhh");
-////				}
-////				if(this.lowLevelBlockedRoad.contains(this.result)){
-////					System.out.println("llllllllllllll");
-////				}
-////				if(this.targetAreas.containConstantss(this.result)){
-////					System.out.println("tartartar");
-////				}
-//			}
-////			System.out.println();
-//		}
-		//firstLevelBlockedRoad
-		if (this.result != null && this.firstLevelBlockedRoad.contains(this.result)
-				&& !this.noNeedToClear.contains(this.result)) {
-			return this;
-		}
-
-		if (!this.firstLevelBlockedRoad.isEmpty()) {
-			List<EntityID> sortList = new ArrayList<>(this.firstLevelBlockedRoad);
-			sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-			List<EntityID> nearPolice = new ArrayList<>();
-			for (StandardEntity se : worldInfo.getEntitiesOfType(StandardEntityURN.POLICE_FORCE)) {
-				nearPolice.add(se.getID());
-			}
-			for (int i = 0; i < sortList.size(); ++i) {
-				EntityID id = this.getClosestEntityID(nearPolice, sortList.get(i));
-				if (id.equals(this.agentInfo.getID())) {
-					return this.getPathTo(positionID, sortList.get(i));
+		
+		// 如果找不到阻塞道路，则搜索未探索区域
+		Collection<EntityID> unexploredAreas = getUnexploredAreas();
+		if (!unexploredAreas.isEmpty()) {
+			// 按照距离排序
+			List<EntityID> sortedUnexploredAreas = new ArrayList<>(unexploredAreas);
+			sortedUnexploredAreas.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID()));
+			
+			for (EntityID areaID : sortedUnexploredAreas) {
+				if (unreachableTargets.contains(areaID)) {
+					continue;
+				}
+				this.pathPlanning.setFrom(this.agentInfo.getPosition());
+				this.pathPlanning.setDestination(areaID);
+				List<EntityID> path = this.pathPlanning.calc().getResult();
+				if (path != null && !path.isEmpty()) {
+					this.result = areaID;
+					return this;
+				} else {
+					unreachableTargets.add(areaID);
 				}
 			}
 		}
-			//SOSroad
-		if (this.result != null && this.SOSroad.contains(this.result)) {
-			if (this.SOSroad.contains(this.agentInfo.getPosition())) {
-				if (position instanceof Road && isRoadPassable((Road) position)) {
-					this.SOSroad.remove(this.agentInfo.getPosition());
-					this.noNeedToClear.add(this.agentInfo.getID());
-				}
-			}
-//			return this;
-		}
-
-
-		if (!this.SOSroad.isEmpty()) {
-			List<EntityID> sortList = new ArrayList<>(this.SOSroad);
-			sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-//			System.out.println("SOSOSOSOSO:" + sortList.get(0).getValue());
-			return this.getPathTo(positionID, sortList.get(0));
-		}
-		//topLevelBlockedRoad
-		if (this.result != null && this.topLevelBlockedRoad.contains(this.result)
-				&& !this.noNeedToClear.contains(this.result)) {
-			return this;
-		}
-		if (!this.topLevelBlockedRoad.isEmpty()) {
-			List<EntityID> sortList = new ArrayList<>(this.topLevelBlockedRoad);
-			sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-			List<EntityID> nearPolice = new ArrayList<>();
-			for (StandardEntity se : worldInfo.getEntitiesOfType(StandardEntityURN.POLICE_FORCE)) {
-				nearPolice.add(se.getID());
-			}
-			for (int i = 0; i < sortList.size(); ++i) {
-				EntityID id = this.getClosestEntityID(nearPolice, sortList.get(i));
-				if (id.equals(this.agentInfo.getID())) {
-					return this.getPathTo(positionID, sortList.get(i));
-				}
-			}
-		}
-
-
-
-
-		//halfTopLevelBlockedRoad
-		if (this.result != null && this.halfTopLevelBlockedRoad.contains(this.result)
-				&& !this.noNeedToClear.contains(this.result)) {
-			return this;
-		}
-
-		if (!this.halfTopLevelBlockedRoad.isEmpty()) {
-			List<EntityID> sortList = new ArrayList<>(this.halfTopLevelBlockedRoad);
-			sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-			List<EntityID> nearPolice = new ArrayList<>();
-			for (StandardEntity se : worldInfo.getEntitiesOfType(StandardEntityURN.POLICE_FORCE)) {
-				nearPolice.add(se.getID());
-			}
-			for (int i = 0; i < sortList.size(); ++i) {
-				EntityID id = this.getClosestEntityID(nearPolice, sortList.get(i));
-				if (id.equals(this.agentInfo.getID())) {
-					return this.getPathTo(positionID, sortList.get(i));
-				}
-			}
-		}
-
-
-
-		//midLevelBlockedRoad
-		if (this.result != null && this.midLevelBlockedRoad.contains(this.result)
-				&& !this.noNeedToClear.contains(this.result)) {
-			return this;
-		}
-		//处理市民
-		if (!this.midLevelBlockedRoad.isEmpty()) {
-			List<EntityID> sortList = new ArrayList<>(this.midLevelBlockedRoad);
-			sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-			List<EntityID> nearPolice = new ArrayList<>();
-			for (StandardEntity se : worldInfo.getEntitiesOfType(StandardEntityURN.POLICE_FORCE)) {
-				nearPolice.add(se.getID());
-			}
-			for (int i = 0; i < sortList.size(); ++i) {
-				EntityID id = this.getClosestEntityID(nearPolice, sortList.get(i));
-				if (id.equals(this.agentInfo.getID())) {
-					return this.getPathTo(positionID, sortList.get(i));
-				}
-			}
-		}
-
-
-
-
-		//halfLowLevelBlockedRoad
-		if (this.result != null && this.halfLowLevelBlockedRoad.contains(this.result)
-				&& !this.noNeedToClear.contains(this.result)) {
-			return this;
-		}
-
-		if (!this.halfLowLevelBlockedRoad.isEmpty()) {
-			List<EntityID> sortList = new ArrayList<>(this.halfLowLevelBlockedRoad);
-			sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-			List<EntityID> nearPolice = new ArrayList<>();
-			for (StandardEntity se : worldInfo.getEntitiesOfType(StandardEntityURN.POLICE_FORCE)) {
-				nearPolice.add(se.getID());
-			}
-			for (int i = 0; i < sortList.size(); ++i) {
-				EntityID id = this.getClosestEntityID(nearPolice, sortList.get(i));
-				if (id.equals(this.agentInfo.getID())) {
-					return this.getPathTo(positionID, sortList.get(i));
-				}
-			}
-		}
-
-
-		//lowLevelBlockedRoad
-		if (this.result != null && this.lowLevelBlockedRoad.contains(this.result)
-				&& !this.noNeedToClear.contains(this.result)) {
-			return this;
-		}
-
-		if (!this.lowLevelBlockedRoad.isEmpty()) {
-			List<EntityID> sortList = new ArrayList<>(this.lowLevelBlockedRoad);
-			sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-			List<EntityID> nearPolice = new ArrayList<>();
-			for (StandardEntity se : worldInfo.getEntitiesOfType(StandardEntityURN.POLICE_FORCE)) {
-				nearPolice.add(se.getID());
-			}
-			for (int i = 0; i < sortList.size(); ++i) {
-				EntityID id = this.getClosestEntityID(nearPolice, sortList.get(i));
-				if (id.equals(this.agentInfo.getID())) {
-					return this.getPathTo(positionID, sortList.get(i));
-				}
-			}
-		}
-		this.times++;
-		if(this.times > 10)
-		{
-			Clear_Flag = true;//聚类中清理完毕了
-		}
-		this.getResultWhenNull();
-
+		
 		return this;
 	}
 
-	private int GetDistance(Area standardEntity, Point2D cluster_center) {
-		double x_dis = standardEntity.getX() - cluster_center.getX();
-		double y_dis = standardEntity.getY() - cluster_center.getY();
-		return (int)(Math.sqrt(x_dis*x_dis + y_dis*y_dis));
-	}
-
-
-	private RoadDetector getResultWhenNull() {
-		if (this.agentInfo.getTime() > scenarioInfo.getKernelAgentsIgnoreuntil()) {
-			if (this.result != null && this.firstTargetAreas.contains(this.result)
-					&& !this.noNeedToClear.contains(this.result)) {
-				return this;
-			}
-			if (this.result != null && this.secondTargetAreas.contains(this.result)
-					&& !this.noNeedToClear.contains(this.result)) {
-				return this;
-			}
-			//去PF自己cluster的各类道路
-			Collection<StandardEntity> clusterEntities = null;
-			if (this.clustering != null) {
-				int clusterIndex = this.clustering.getClusterIndex(this.agentInfo.getID());
-				if (clusterIndex != -1) {
-					clusterEntities = this.clustering.getClusterEntities(clusterIndex);
-				}
-				//先看civilian
-				for (StandardEntity civilianEntity : worldInfo.getEntitiesOfType(StandardEntityURN.CIVILIAN)) {
-					Civilian civilian = (Civilian) civilianEntity;
-					if (!civilian.isPositionDefined() || !civilian.isHPDefined() ) {
-						continue;
-					}
-					StandardEntity positionEntity = this.worldInfo.getEntity(civilian.getPosition());
-					if (clusterEntities.contains(positionEntity)) {
-						if (positionEntity instanceof Building) {
-							Building building = (Building) positionEntity;
-							if(!building.isBrokennessDefined() || building.getBrokenness() <= 0)//不管损坏为0的建筑
-								continue;
-							for (EntityID neighbourId : this.get_all_Bloacked_Entrance_of_Building(building)) {
-								StandardEntity neighbour = this.worldInfo.getEntity(neighbourId);
-								if (neighbour instanceof Road) {
-									if (!this.noNeedToClear.contains(neighbourId)) {
-										this.firstTargetAreas.add(neighbourId);
-									}
-								}
-							}
-						}
-					}
-				}
-
-				//再看AT、FB
-				for (StandardEntity agentEntity : worldInfo.getEntitiesOfType(StandardEntityURN.AMBULANCE_TEAM, StandardEntityURN.FIRE_BRIGADE)) {
-					Human human = (Human) agentEntity;
-					if (!human.isPositionDefined() || !human.isHPDefined() ) {
-						continue;
-					}
-					StandardEntity positionEntity = worldInfo.getEntity(human.getPosition());
-					if (clusterEntities.contains(positionEntity)) {
-						if (positionEntity instanceof Building) {
-							Building building = (Building) positionEntity;
-							for (EntityID neighbourId : this.get_all_Bloacked_Entrance_of_Building(building)) {
-								StandardEntity neighbour = this.worldInfo.getEntity(neighbourId);
-								if (neighbour instanceof Road ) {
-									if (!this.noNeedToClear.contains(neighbourId)) {
-										this.firstTargetAreas.add(neighbourId);
-									}
-								}
-							}
-						} else if (positionEntity instanceof Road ) {
-							Road road = (Road) positionEntity;
-							if (!this.noNeedToClear.contains(road.getID())) {
-								this.firstTargetAreas.add(road.getID());
-							}
-						}
-					}
-				}
-
-
-
-
-				//建筑入口
-				for (StandardEntity se : clusterEntities) {
-					if (se instanceof Building) {
-						for (EntityID id : ((Building) se).getNeighbours()) {
-							StandardEntity neighbour = this.worldInfo.getEntity(id);
-							if (neighbour instanceof Road || neighbour instanceof Hydrant) {
-								if (!this.noNeedToClear.contains(id)) {
-									this.secondTargetAreas.add(id);
-								}
-							}
-						}
-					}
-				}
-
-				//common roads
-				for (StandardEntity se : clusterEntities) {
-					if (se instanceof Road ) {
-						if (!this.noNeedToClear.contains(se.getID())
-								&& !this.secondTargetAreas.contains(se.getID())) {
-							this.firstTargetAreas.add(se.getID());
-						}
-					}
-				}
-
-				for (EntityID id : this.worldInfo.getChanged().getChangedEntities()) {
-					StandardEntity entity = this.worldInfo.getEntity(id);
-					if (entity instanceof Road || entity instanceof Hydrant) {
-						Road road = (Road) entity;
-						if (this.isRoadPassable(road)) {
-							this.firstTargetAreas.remove(road.getID());
-							this.secondTargetAreas.remove(road.getID());
-							this.noNeedToClear.add(road.getID());
-						}
-					}
-				}
-
-			} else {
-				//in case of null cluster
-				for (StandardEntity e : this.worldInfo.getEntitiesOfType(REFUGE, BUILDING, GAS_STATION)) {
-					for (EntityID id : ((Building) e).getNeighbours()) {
-						StandardEntity neighbour = this.worldInfo.getEntity(id);
-						if (neighbour instanceof Road) {
-							this.firstTargetAreas.add(id);
-						}
-					}
-				}
-			}
-			if (this.firstTargetAreas != null && !this.firstTargetAreas.isEmpty()) {
-				List<EntityID> sortList = new ArrayList<>(this.firstTargetAreas);
-				sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-				return this.getPathTo(this.agentInfo.getPosition(),sortList.get(0));
-			}
-			if (this.secondTargetAreas != null && !this.secondTargetAreas.isEmpty()) {
-				List<EntityID> sortList = new ArrayList<>(this.secondTargetAreas);
-				sortList.sort(new DistanceIDSorter(this.worldInfo, this.agentInfo.getID(),this.pathPlanning));
-				return this.getPathTo(this.agentInfo.getPosition(),sortList.get(0));
+	private Collection<StandardEntity> getBlockedRoads() {
+		Collection<StandardEntity> result = new ArrayList<>();
+		// 使用CSUWorldHelper提供的被阻塞道路信息
+		for (StandardEntity entity : this.worldInfo.getEntitiesOfType(StandardEntityURN.ROAD)) {
+			Road road = (Road) entity;
+			if (road.isBlockadesDefined() && !road.getBlockades().isEmpty()) {
+				result.add(road);
 			}
 		}
-		this.result = null;
-		return this;
+		return result;
 	}
 
-	private boolean inRange(PoliceForce a, PoliceForce b) {
-		return (a.getX() - 3000 < b.getX()) && (a.getX() + 3000 > b.getX()) && (a.getY() - 3000 < b.getY()) && (a.getY() + 3000 > b.getY());
+	private Collection<EntityID> getUnexploredAreas() {
+		int clusterIndex = this.clustering.getClusterIndex(this.agentInfo.getID());
+		Collection<EntityID> clusterRoads = new HashSet<>();
+		Collection<StandardEntity> clusterEntities = this.clustering.getClusterEntities(clusterIndex);
+		
+		for (StandardEntity entity : clusterEntities) {
+			if (entity instanceof Road) {
+				clusterRoads.add(entity.getID());
+			}
+		}
+		
+		// 排除已经探索过的道路
+		clusterRoads.removeAll(this.targetAreas);
+		return clusterRoads;
 	}
 
 	@Override
@@ -709,26 +364,26 @@ public class CSURoadDetector extends RoadDetector {
 
 	@Override
 	public RoadDetector precompute(PrecomputeData precomputeData) {
-
 		super.precompute(precomputeData);
-		this.pathPlanning.precompute(precomputeData);
-		this.clustering.precompute(precomputeData);
-		this.guidelineCreator.precompute(precomputeData);
 		if (this.getCountPrecompute() >= 2) {
 			return this;
 		}
+		this.worldHelper.precompute(precomputeData);
+		this.pathPlanning.precompute(precomputeData);
+		this.clustering.precompute(precomputeData);
+		this.guidelineCreator.precompute(precomputeData);
 		return this;
 	}
 
 	@Override
 	public RoadDetector resume(PrecomputeData precomputeData) {
 		super.resume(precomputeData);
-		this.pathPlanning.resume(precomputeData);
-		this.clustering.resume(precomputeData);
-		//this.clustering.resume(precomputeData);
 		if (this.getCountResume() >= 2) {
 			return this;
 		}
+		this.worldHelper.resume(precomputeData);
+		this.pathPlanning.resume(precomputeData);
+		this.clustering.resume(precomputeData);
 		this.guidelineCreator.resume(precomputeData);
 		this.judgeRoad = guidelineCreator.getJudgeRoad();
 
@@ -758,13 +413,13 @@ public class CSURoadDetector extends RoadDetector {
 
 	@Override
 	public RoadDetector preparate() {
-
 		super.preparate();
-		this.pathPlanning.preparate();
-		this.clustering.preparate();
 		if (this.getCountPreparate() >= 2) {
 			return this;
 		}
+		this.worldHelper.preparate();
+		this.pathPlanning.preparate();
+		this.clustering.preparate();
 		this.guidelineCreator.preparate();
 		this.judgeRoad = guidelineCreator.getJudgeRoad();
 
@@ -788,7 +443,6 @@ public class CSURoadDetector extends RoadDetector {
 		}else if (CSUConstants.DEBUG_NEED_CLEAR_COMMON){
 			System.out.println("NO NEED TO CLEAR");
 		}
-
 
 		return this;
 	}
@@ -832,6 +486,14 @@ public class CSURoadDetector extends RoadDetector {
 		this.pathPlanning.updateInfo(messageManager);
 		this.clustering.updateInfo(messageManager);
 		this.guidelineCreator.updateInfo(messageManager);
+
+		// 更新已探索的区域
+		if (this.result != null) {
+			this.targetAreas.add(this.result);
+		}
+		
+		// 重置结果以便下一次计算
+		this.result = null;
 
 		return this;
 	}
@@ -1443,6 +1105,12 @@ public class CSURoadDetector extends RoadDetector {
 				}
 			}
 		}
+	}
+
+	private int GetDistance(Area standardEntity, Point2D cluster_center) {
+		double x_dis = standardEntity.getX() - cluster_center.getX();
+		double y_dis = standardEntity.getY() - cluster_center.getY();
+		return (int)(Math.sqrt(x_dis*x_dis + y_dis*y_dis));
 	}
 }
 

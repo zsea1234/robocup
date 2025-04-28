@@ -1,7 +1,5 @@
 package CSU_Yunlu_2023.module.complex.center;
 
-import CSU_Yunlu_2023.module.algorithm.AStarPathPlanning;
-import CSU_Yunlu_2023.module.algorithm.SampleKMeans;
 import adf.core.agent.communication.MessageManager;
 import adf.core.agent.develop.DevelopData;
 import adf.core.agent.info.AgentInfo;
@@ -10,584 +8,321 @@ import adf.core.agent.info.WorldInfo;
 import adf.core.agent.module.ModuleManager;
 import adf.core.agent.precompute.PrecomputeData;
 import adf.core.component.module.complex.PoliceTargetAllocator;
-import rescuecore2.standard.entities.*;
+import adf.core.component.module.algorithm.PathPlanning;
 import rescuecore2.worldmodel.EntityID;
-import rescuecore2.misc.Pair;
+import rescuecore2.standard.entities.Blockade;
+import rescuecore2.standard.entities.PoliceForce;
+import rescuecore2.standard.entities.Road;
+import rescuecore2.standard.entities.StandardEntity;
+import rescuecore2.standard.entities.StandardEntityURN;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 public class CSUPoliceTargetAllocator extends PoliceTargetAllocator {
 
-    // Configuration parameters
-    private static final int NUM_ACTIONS = 5;
-    private static final int X_BIN_SIZE = 250;    // Reduced for finer resolution
-    private static final int Y_BIN_SIZE = 250;
-    private static final int DISTANCE_BIN = 400;  // Finer granularity
-    private static final int MAX_DISTANCE = 100000;
-    private static final double INITIAL_EPSILON = 0.95;
-    private static final double MIN_EPSILON = 0.05;
-    private static final double EPSILON_DECAY = 0.996;  // Faster decay for quicker convergence
-    private static final double LEARNING_RATE = 0.6;    // Increased to adapt faster
-    private static final double DISCOUNT_FACTOR = 0.9;  // Emphasize long-term rewards
-    private static final int STATE_SPACE_SIZE = 1009;
-    private static final int PRIORITY_RADIUS = 6000;    // Increased radius for priority areas
-    private static final int TARGET_REASSIGNMENT_TIME = 4; // Reduced time for faster reassignment
+    private Map<EntityID, EntityID> result;
+    
+    // 记录已分配的目标，避免重复分配
+    private Set<EntityID> assignedTargets;
+    
+    // 用于路径规划
+    private PathPlanning pathPlanning;
+    
+    // 缓存已知的阻塞物
+    private List<EntityID> knownBlockades;
 
-    // System components
-    private final Set<EntityID> priorityAreas = new HashSet<>();
-    private final Set<EntityID> targetAreas = new HashSet<>();
-    private final Map<EntityID, PoliceForceInfo> agentInfoMap = new HashMap<>();
-    private final Map<EntityID, List<Road>> blockadeHistogram = new HashMap<>();
-    private SampleKMeans kMeansClusterer;
-    private AStarPathPlanning pathPlanner;
-
-    // Reinforcement learning components
-    private final Map<Integer, double[]> dynamicQ = new ConcurrentHashMap<>();
-    private double epsilon = INITIAL_EPSILON;
-    private final Map<EntityID, EntityID> previousActions = new ConcurrentHashMap<>();
-    private final Map<EntityID, Double> targetValueCache = new HashMap<>();
-    private int lastUpdateTime = 0;
-
-    public CSUPoliceTargetAllocator(AgentInfo ai, WorldInfo wi, ScenarioInfo si,
-                                    ModuleManager moduleManager, DevelopData developData) {
+    public CSUPoliceTargetAllocator(AgentInfo ai, WorldInfo wi, ScenarioInfo si, ModuleManager moduleManager, DevelopData developData) {
         super(ai, wi, si, moduleManager, developData);
-        initializeComponents();
-        loadPriorityAreas();
-        loadTargetAreas();
-        initializePoliceInfo();
+        this.result = new HashMap<>();
+        this.assignedTargets = new HashSet<>();
+        this.knownBlockades = new ArrayList<>();
+        
+        // 初始化路径规划组件
+        this.pathPlanning = moduleManager.getModule("TestPoliceTargetAllocator.PathPlanning", "adf.core.sample.module.algorithm.SamplePathPlanning");
     }
 
-    private void initializeComponents() {
-        this.kMeansClusterer = new SampleKMeans(agentInfo, worldInfo, scenarioInfo, moduleManager, developData);
-        this.pathPlanner = new AStarPathPlanning(agentInfo, worldInfo, scenarioInfo, moduleManager, developData);
-    }
-
-    private void loadPriorityAreas() {
-        // Add roads around critical facilities (refuges) as priority areas
-        for (StandardEntity refuge : worldInfo.getEntitiesOfType(StandardEntityURN.REFUGE)) {
-            addSurroundingRoads(refuge, priorityAreas, PRIORITY_RADIUS);
-        }
-        
-        // Also add roads around fire stations and ambulance centers
-        for (StandardEntity station : worldInfo.getEntitiesOfType(
-                StandardEntityURN.FIRE_STATION, 
-                StandardEntityURN.AMBULANCE_CENTRE)) {
-            addSurroundingRoads(station, priorityAreas, PRIORITY_RADIUS / 2);
-        }
-    }
-
-    private void loadTargetAreas() {
-        // Add roads around buildings that might need evacuation routes
-        for (StandardEntity building : worldInfo.getEntitiesOfType(
-                StandardEntityURN.BUILDING,
-                StandardEntityURN.GAS_STATION)) {
-            addSurroundingRoads(building, targetAreas, PRIORITY_RADIUS / 3);
-        }
-        
-        // Calculate blockade histogram for each road
-        updateBlockadeHistogram();
-    }
-
-    private void updateBlockadeHistogram() {
-        blockadeHistogram.clear();
-        
-        for (StandardEntity entity : worldInfo.getEntitiesOfType(StandardEntityURN.ROAD)) {
-            Road road = (Road) entity;
-            if (road.isBlockadesDefined() && !road.getBlockades().isEmpty()) {
-                road.getBlockades().forEach(blockadeID -> {
-                    EntityID roadID = road.getID();
-                    blockadeHistogram.computeIfAbsent(roadID, k -> new ArrayList<>()).add(road);
-                });
-            }
-        }
-    }
-
-    private void addSurroundingRoads(StandardEntity entity, Set<EntityID> targetSet, int radius) {
-        for (EntityID neighborID : worldInfo.getObjectIDsInRange(entity.getID(), radius)) {
-            StandardEntity neighbor = worldInfo.getEntity(neighborID);
-            if (neighbor instanceof Road) {
-                Road road = (Road) neighbor;
-                if (road.isBlockadesDefined() && !road.getBlockades().isEmpty()) {
-                    targetSet.add(neighborID);
-                }
-            }
-        }
-    }
-
-    private void initializePoliceInfo() {
-        for (EntityID id : worldInfo.getEntityIDsOfType(StandardEntityURN.POLICE_FORCE)) {
-            StandardEntity entity = worldInfo.getEntity(id);
-            if (entity instanceof PoliceForce && ((PoliceForce) entity).isPositionDefined()) {
-                agentInfoMap.put(id, new PoliceForceInfo(id));
-            }
-        }
-    }
-
-    @Override
-    public PoliceTargetAllocator calc() {
-        // Update state if necessary
-        if (agentInfo.getTime() > lastUpdateTime) {
-            updateBlockadeHistogram();
-            kMeansClusterer.calClusterAndAssign();
-            lastUpdateTime = agentInfo.getTime();
-            targetValueCache.clear(); // Clear cache when time advances
-        }
-        
-        List<StandardEntity> availableAgents = getAvailableAgents();
-        
-        // Get all blocked roads for more efficient allocation
-        List<EntityID> blockedRoads = getBlockedRoads();
-
-        // Phase 1: Priority area assignments
-        processPriorityAssignments(availableAgents, blockedRoads);
-
-        // Phase 2: Regular area assignments with workload balancing
-        processRegularAssignments(availableAgents, blockedRoads);
-
-        return this;
-    }
-
-    private List<EntityID> getBlockedRoads() {
-        List<EntityID> blockedRoads = new ArrayList<>();
-        
-        // First add roads from priority areas
-        for (EntityID id : priorityAreas) {
-            StandardEntity entity = worldInfo.getEntity(id);
-            if (entity instanceof Road) {
-                Road road = (Road) entity;
-                if (road.isBlockadesDefined() && !road.getBlockades().isEmpty()) {
-                    blockedRoads.add(id);
-                }
-            }
-        }
-        
-        // Then add other blocked roads
-        for (EntityID id : targetAreas) {
-            if (!blockedRoads.contains(id)) {
-                StandardEntity entity = worldInfo.getEntity(id);
-                if (entity instanceof Road) {
-                    Road road = (Road) entity;
-                    if (road.isBlockadesDefined() && !road.getBlockades().isEmpty()) {
-                        blockedRoads.add(id);
-                    }
-                }
-            }
-        }
-        
-        return blockedRoads;
-    }
-
-    private void processPriorityAssignments(List<StandardEntity> agents, List<EntityID> blockedRoads) {
-        // Filter priority roads that are actually blocked
-        List<EntityID> priorityTargets = blockedRoads.stream()
-                .filter(priorityAreas::contains)
-                .collect(Collectors.toList());
-        
-        if (priorityTargets.isEmpty()) return;
-        
-        // Sort agents by their suitability for priority tasks
-        agents.sort(Comparator.comparingInt(a -> 
-            worldInfo.getDistance(a.getID(), findNearestTarget(a, priorityTargets))));
-            
-        // Assign agents to priority targets using Hungarian algorithm
-        Map<EntityID, EntityID> assignments = calculateOptimalAssignments(agents, priorityTargets);
-        
-        // Process assignments
-        assignments.forEach((agentID, targetID) -> {
-            StandardEntity agent = worldInfo.getEntity(agentID);
-            processAgentAssignment(agent, targetID);
-            priorityTargets.remove(targetID);
-            agents.remove(agent);
-        });
-    }
-
-    private Map<EntityID, EntityID> calculateOptimalAssignments(List<StandardEntity> agents, List<EntityID> targets) {
-        Map<EntityID, EntityID> result = new HashMap<>();
-        if (agents.isEmpty() || targets.isEmpty()) return result;
-        
-        // Simple greedy algorithm for smaller problem sizes
-        if (agents.size() <= 3 || targets.size() <= 3) {
-            for (StandardEntity agent : new ArrayList<>(agents)) {
-                if (targets.isEmpty()) break;
-                
-                EntityID bestTarget = findBestTarget(agent, targets);
-                if (bestTarget != null) {
-                    result.put(agent.getID(), bestTarget);
-                    targets.remove(bestTarget);
-                }
-            }
-            return result;
-        }
-        
-        // For larger sets, use more sophisticated matching
-        PriorityQueue<AgentTargetPair> pairs = new PriorityQueue<>();
-        
-        for (StandardEntity agent : agents) {
-            for (EntityID target : targets) {
-                double value = calculateTargetValue(agent, target);
-                pairs.add(new AgentTargetPair(agent.getID(), target, value));
-            }
-        }
-        
-        Set<EntityID> assignedAgents = new HashSet<>();
-        Set<EntityID> assignedTargets = new HashSet<>();
-        
-        while (!pairs.isEmpty() && assignedAgents.size() < agents.size() 
-               && assignedTargets.size() < targets.size()) {
-            AgentTargetPair pair = pairs.poll();
-            
-            if (!assignedAgents.contains(pair.agentID) && !assignedTargets.contains(pair.targetID)) {
-                result.put(pair.agentID, pair.targetID);
-                assignedAgents.add(pair.agentID);
-                assignedTargets.add(pair.targetID);
-            }
-        }
-        
-        return result;
-    }
-
-    private EntityID findBestTarget(StandardEntity agent, List<EntityID> targets) {
-        return targets.stream()
-            .max(Comparator.comparingDouble(t -> calculateTargetValue(agent, t)))
-            .orElse(null);
-    }
-
-    private double calculateTargetValue(StandardEntity agent, EntityID targetID) {
-        // Use cached value if available
-        String key = agent.getID() + ":" + targetID;
-        if (targetValueCache.containsKey(targetID)) {
-            return targetValueCache.get(targetID);
-        }
-        
-        double value = 0;
-        
-        // Distance factor (closer is better)
-        double distance = worldInfo.getDistance(agent.getID(), targetID);
-        double normalizedDistance = Math.min(distance / MAX_DISTANCE, 1.0);
-        value += (1 - normalizedDistance) * 50;
-        
-        // Priority factor
-        if (priorityAreas.contains(targetID)) {
-            value += 30;
-        }
-        
-        // Blockade factor
-        StandardEntity targetEntity = worldInfo.getEntity(targetID);
-        if (targetEntity instanceof Road) {
-            Road road = (Road) targetEntity;
-            if (road.isBlockadesDefined()) {
-                value += road.getBlockades().size() * 5;
-            }
-        }
-        
-        // Cache the calculated value
-        targetValueCache.put(targetID, value);
-        
-        return value;
-    }
-
-    private void processRegularAssignments(List<StandardEntity> agents, List<EntityID> blockedRoads) {
-        // Filter out priority roads that are already being handled
-        List<EntityID> regularTargets = blockedRoads.stream()
-                .filter(id -> !priorityAreas.contains(id))
-                .collect(Collectors.toList());
-                
-        if (regularTargets.isEmpty() || agents.isEmpty()) return;
-        
-        // Use cluster assignments first if available
-        Map<EntityID, EntityID> clusterAssignments = new HashMap<>();
-        for (StandardEntity agent : agents) {
-            EntityID clusterCenter = kMeansClusterer.getClusterCenter(agent.getID());
-            if (clusterCenter != null && regularTargets.contains(clusterCenter)) {
-                clusterAssignments.put(agent.getID(), clusterCenter);
-                regularTargets.remove(clusterCenter);
-            }
-        }
-        
-        // Process cluster assignments
-        clusterAssignments.forEach((agentID, targetID) -> {
-            StandardEntity agent = worldInfo.getEntity(agentID);
-            processAgentAssignment(agent, targetID);
-            agents.remove(agent);
-        });
-        
-        // Process remaining assignments using RL
-        if (!agents.isEmpty() && !regularTargets.isEmpty()) {
-            Map<EntityID, EntityID> assignments = calculateOptimalAssignments(agents, regularTargets);
-            
-            assignments.forEach((agentID, targetID) -> {
-                StandardEntity agent = worldInfo.getEntity(agentID);
-                processAgentAssignment(agent, targetID);
-            });
-        }
-    }
-
-    private void processAgentAssignment(StandardEntity agent, EntityID target) {
-        int state = generateState(agent, target);
-        int action = selectAction(state);
-
-        updateQLearning(state, action, agent, target);
-
-        if (shouldAssignAction(action)) {
-            assignAgentToTarget(agent.getID(), target);
-            previousActions.put(agent.getID(), target);
-        }
-    }
-
-    private int generateState(StandardEntity agent, EntityID target) {
-        PoliceForce police = (PoliceForce) agent;
-        Pair<Integer, Integer> agentLoc = worldInfo.getLocation(agent.getID());
-        Pair<Integer, Integer> targetLoc = worldInfo.getLocation(target);
-
-        // Coordinate binning
-        int xBin = agentLoc.first() / X_BIN_SIZE;
-        int yBin = agentLoc.second() / Y_BIN_SIZE;
-
-        // Relative position
-        int dx = (targetLoc.first() - agentLoc.first()) / X_BIN_SIZE;
-        int dy = (targetLoc.second() - agentLoc.second()) / Y_BIN_SIZE;
-
-        // Distance binning
-        double distance = worldInfo.getDistance(agent.getID(), target);
-        int distBin = (int) (distance / DISTANCE_BIN);
-        
-        // Agent state
-        int agentState = 0;
-        if (police.isDamageDefined() && police.getDamage() > 0) {
-            agentState = 1;
-        }
-
-        // State hashing with improved distribution
-        return Math.abs((xBin * 31 + yBin * 17 + dx * 7 + dy * 13 + distBin * 5 + agentState * 23)) % STATE_SPACE_SIZE;
-    }
-
-    private int selectAction(int state) {
-        ensureQState(state);
-        epsilon = Math.max(epsilon * EPSILON_DECAY, MIN_EPSILON);
-
-        // Epsilon-greedy policy
-        if (Math.random() < epsilon) {
-            return (int) (Math.random() * NUM_ACTIONS);
-        }
-        return findBestAction(state);
-    }
-
-    private void updateQLearning(int state, int action, StandardEntity agent, EntityID target) {
-        double reward = calculateReward(agent, target);
-        int nextState = generateState(agent, target);
-
-        // Double Q-learning update
-        double maxNextQ = Arrays.stream(getQValues(nextState)).max().orElse(0);
-        double newValue = (1 - LEARNING_RATE) * getQValue(state, action)
-                + LEARNING_RATE * (reward + DISCOUNT_FACTOR * maxNextQ);
-
-        updateQValue(state, action, newValue);
-    }
-
-    private double calculateReward(StandardEntity agent, EntityID target) {
-        if (agent == null || target == null) return 0;
-
-        PoliceForceInfo info = agentInfoMap.get(agent.getID());
-        if (info == null) return 0;
-
-        double reward = 0;
-
-        // Target validity and criticality rewards
-        StandardEntity targetEntity = worldInfo.getEntity(target);
-        if (targetEntity instanceof Road) {
-            Road road = (Road) targetEntity;
-            
-            // Check if there are blockades to clear
-            if (road.isBlockadesDefined() && !road.getBlockades().isEmpty()) {
-                reward += 25;
-                
-                // Higher reward for critical areas
-                if (isCriticalArea(target)) {
-                    reward += 40;
-                }
-                
-                // Higher reward for roads with more blockades
-                reward += Math.min(road.getBlockades().size() * 3, 15);
-            }
-        }
-        
-        // Distance-based reward (closer is better)
-        double distance = worldInfo.getDistance(agent.getID(), target);
-        double normalizedDistance = Math.min(distance / MAX_DISTANCE, 1.0);
-        reward += (1 - normalizedDistance) * 20;
-        
-        // Previous commitment reward (to encourage finishing tasks)
-        if (info.getCurrentTarget() != null && target.equals(info.getCurrentTarget())) {
-            reward += 15;
-        }
-        
-        // Health status penalty/reward
-        PoliceForce police = (PoliceForce) agent;
-        if (police.isDamageDefined() && police.getDamage() > 0) {
-            // Penalize assigning damaged agents to distant targets
-            reward -= police.getDamage() * normalizedDistance * 0.1;
-        }
-
-        return reward;
-    }
-
-    private EntityID findNearestTarget(StandardEntity agent, List<EntityID> candidates) {
-        if (candidates == null || candidates.isEmpty()) return null;
-
-        return candidates.stream()
-                .filter(Objects::nonNull)
-                .min(Comparator.comparingDouble(t ->
-                        worldInfo.getDistance(agent.getID(), t)))
-                .orElse(null);
-    }
-
-    private EntityID findNearestPriorityTarget(StandardEntity agent, List<EntityID> targets) {
-        return targets.stream()
-                .min(Comparator.comparingDouble(t -> worldInfo.getDistance(agent.getID(), t)))
-                .orElse(null);
-    }
-
-    private void assignAgentToTarget(EntityID agentID, EntityID target) {
-        PoliceForceInfo info = agentInfoMap.get(agentID);
-        if (info != null) {
-            info.updateAssignment(target, agentInfo.getTime());
-        }
-    }
-
-    private List<StandardEntity> getAvailableAgents() {
-        List<StandardEntity> agents = new ArrayList<>();
-        for (StandardEntity entity : worldInfo.getEntitiesOfType(StandardEntityURN.POLICE_FORCE)) {
-            PoliceForce police = (PoliceForce) entity;
-            PoliceForceInfo info = agentInfoMap.get(entity.getID());
-            
-            if (info != null && info.isAvailable()) {
-                agents.add(entity);
-            }
-        }
-        return agents;
-    }
-
-    // Q-table management
-    private void ensureQState(int state) {
-        dynamicQ.putIfAbsent(state, new double[NUM_ACTIONS]);
-    }
-
-    private double[] getQValues(int state) {
-        ensureQState(state);
-        return dynamicQ.get(state);
-    }
-
-    private double getQValue(int state, int action) {
-        return getQValues(state)[action];
-    }
-
-    private void updateQValue(int state, int action, double value) {
-        getQValues(state)[action] = value;
-    }
-
-    private int findBestAction(int state) {
-        double[] qValues = getQValues(state);
-        int bestAction = 0;
-        double bestValue = qValues[0];
-        
-        for (int i = 1; i < qValues.length; i++) {
-            if (qValues[i] > bestValue) {
-                bestValue = qValues[i];
-                bestAction = i;
-            }
-        }
-        return bestAction;
-    }
-
-    private boolean shouldAssignAction(int action) {
-        // Actions 0, 2, and 3 lead to assignments
-        return action == 0 || action == 2 || action == 3;
-    }
-
-    private boolean isCriticalArea(EntityID target) {
-        return priorityAreas.contains(target);
-    }
-
-    private class AgentTargetPair implements Comparable<AgentTargetPair> {
-        EntityID agentID;
-        EntityID targetID;
-        double value;
-        
-        AgentTargetPair(EntityID agent, EntityID target, double value) {
-            this.agentID = agent;
-            this.targetID = target;
-            this.value = value;
-        }
-        
-        @Override
-        public int compareTo(AgentTargetPair other) {
-            // Higher values come first in PriorityQueue
-            return Double.compare(other.value, this.value);
-        }
-    }
-
-    private class PoliceForceInfo {
-        EntityID agentID;
-        EntityID currentTarget;
-        int lastUpdate;
-        boolean available;
-
-        public EntityID getCurrentTarget() {
-            return currentTarget;
-        }
-
-        boolean isTargetValid() {
-            return currentTarget != null
-                    && worldInfo.getEntity(currentTarget) instanceof Road;
-        }
-
-        PoliceForceInfo(EntityID id) {
-            this.agentID = id;
-            this.available = true;
-        }
-
-        void updateAssignment(EntityID target, int timestamp) {
-            this.currentTarget = target;
-            this.lastUpdate = timestamp;
-            this.available = false;
-        }
-
-        boolean isAvailable() {
-            // Faster reassignment cycle
-            return available || (currentTarget == null) || 
-                   (agentInfo.getTime() - lastUpdate) > TARGET_REASSIGNMENT_TIME;
-        }
-    }
-
-    // Framework methods
     @Override
     public PoliceTargetAllocator resume(PrecomputeData precomputeData) {
         super.resume(precomputeData);
+        if (this.getCountResume() >= 2) {
+            return this;
+        }
+        
+        // 可以从precomputeData中恢复一些预计算数据
+        // 例如：this.knownBlockades = ...
+        
         return this;
     }
 
     @Override
     public PoliceTargetAllocator preparate() {
         super.preparate();
+        if (this.getCountPrecompute() >= 2) {
+            return this;
+        }
+        
+        // 预计算一些数据
+        // 例如：对地图进行分析，识别潜在的关键道路
+        
         return this;
     }
 
     @Override
     public Map<EntityID, EntityID> getResult() {
-        Map<EntityID, EntityID> result = new HashMap<>();
-        agentInfoMap.forEach((id, info) -> {
-            if (info.currentTarget != null) {
-                result.put(id, info.currentTarget);
+        // 返回计算结果而不是null
+        return this.result;
+    }
+
+    @Override
+    public PoliceTargetAllocator calc() {
+        // 每次计算时重置结果
+        this.result = new HashMap<>();
+        this.assignedTargets = new HashSet<>();
+        
+        // 获取当前所有警察
+        Collection<StandardEntity> policeForces = this.worldInfo.getEntitiesOfType(StandardEntityURN.POLICE_FORCE);
+        if (policeForces.isEmpty()) {
+            return this;
+        }
+        
+        // 获取所有道路上的阻塞物
+        List<EntityID> blockades = new ArrayList<>();
+        for (StandardEntity entity : this.worldInfo.getEntitiesOfType(StandardEntityURN.ROAD)) {
+            Road road = (Road) entity;
+            if (road.isBlockadesDefined() && !road.getBlockades().isEmpty()) {
+                blockades.addAll(road.getBlockades());
             }
-        });
-        return result;
+        }
+        
+        // 如果没有阻塞物，则不需要分配目标
+        if (blockades.isEmpty()) {
+            return this;
+        }
+        
+        // 计算每个阻塞物的优先级（可以基于位置、大小等）
+        Map<EntityID, Double> blockadePriorities = calculateBlockadePriorities(blockades);
+        
+        // 根据优先级对阻塞物进行排序
+        List<EntityID> sortedBlockades = new ArrayList<>(blockades);
+        sortedBlockades.sort((o1, o2) -> Double.compare(blockadePriorities.get(o2), blockadePriorities.get(o1)));
+        
+        // 遍历每个警察，分配最近的高优先级阻塞物
+        for (StandardEntity entity : policeForces) {
+            PoliceForce police = (PoliceForce) entity;
+            
+            // 如果警察被掩埋或无法行动，则跳过
+            if (police.isBuriednessDefined() && police.getBuriedness() > 0) {
+                continue;
+            }
+            
+            // 寻找最佳目标
+            EntityID bestTarget = findBestTarget(police, sortedBlockades);
+            if (bestTarget != null) {
+                this.result.put(police.getID(), bestTarget);
+                this.assignedTargets.add(bestTarget);
+            }
+        }
+        
+        return this;
     }
 
     @Override
     public PoliceTargetAllocator updateInfo(MessageManager messageManager) {
         super.updateInfo(messageManager);
+        if (this.getCountUpdateInfo() >= 2) {
+            return this;
+        }
+        
+        // 处理从其他智能体接收的消息
+        // 例如：更新已知的阻塞物列表
+        // messageManager.getReceivedMessageList() ...
+        
         return this;
     }
+    
+    /**
+     * 计算每个阻塞物的优先级
+     * @param blockades 阻塞物ID列表
+     * @return 每个阻塞物ID对应的优先级值（值越大优先级越高）
+     */
+    private Map<EntityID, Double> calculateBlockadePriorities(List<EntityID> blockades) {
+        Map<EntityID, Double> priorities = new HashMap<>();
+        
+        // 获取重要设施（救援中心、消防站、警察局等）
+        List<StandardEntity> importantFacilities = new ArrayList<>();
+        importantFacilities.addAll(this.worldInfo.getEntitiesOfType(
+                StandardEntityURN.REFUGE,
+                StandardEntityURN.FIRE_STATION,
+                StandardEntityURN.POLICE_OFFICE,
+                StandardEntityURN.AMBULANCE_CENTRE));
+        
+        for (EntityID blockadeID : blockades) {
+            Blockade blockade = (Blockade) this.worldInfo.getEntity(blockadeID);
+            if (blockade == null) {
+                continue;
+            }
+            
+            double priority = 0.0;
+            Road road = (Road) this.worldInfo.getEntity(blockade.getPosition());
+            if (road == null) {
+                continue;
+            }
+            
+            // 1. 道路的邻居数量 - 使用边数量作为连通性指标
+            Collection<EntityID> neighbours = road.getNeighbours();
+            if (neighbours != null) {
+                priority += neighbours.size() * 5.0;
+            }
+            
+            // 2. 考虑阻塞物的修复成本 - 通常较大的阻塞物需要更高的修复成本
+            if (blockade.isRepairCostDefined()) {
+                priority += blockade.getRepairCost() * 0.01; // 适当缩放修复成本
+            }
+            
+            // 3. 通往重要设施的道路 - 检查是否通往或靠近重要设施
+            for (StandardEntity facility : importantFacilities) {
+                List<EntityID> path = findPathToTarget(road.getID(), facility.getID(), 5);
+                if (path != null && !path.isEmpty()) {
+                    // 路径越短，表示越靠近重要设施
+                    priority += 100.0 / Math.max(1, path.size());
+                }
+            }
+            
+            // 4. 检查该道路是否在救援路线上
+            if (isOnRescueRoute(road.getID())) {
+                priority += 50.0;
+            }
+            
+            // 5. 考虑道路上的阻塞物总数 - 完全阻塞的道路更重要
+            Collection<EntityID> roadBlockades = road.getBlockades();
+            if (roadBlockades != null) {
+                // 如果一条道路上有多个阻塞物，它可能被完全阻塞，优先级更高
+                priority += roadBlockades.size() * 10.0;
+                
+                // 计算该阻塞物在道路总阻塞中的比例（如果可以获取修复成本）
+                if (blockade.isRepairCostDefined()) {
+                    int totalRepairCost = 0;
+                    for (EntityID otherBlockadeID : roadBlockades) {
+                        Blockade otherBlockade = (Blockade) this.worldInfo.getEntity(otherBlockadeID);
+                        if (otherBlockade != null && otherBlockade.isRepairCostDefined()) {
+                            totalRepairCost += otherBlockade.getRepairCost();
+                        }
+                    }
+                    
+                    if (totalRepairCost > 0) {
+                        // 该阻塞物占总阻塞的比例越高，优先级越高
+                        priority += 20.0 * (blockade.getRepairCost() / (double) totalRepairCost);
+                    }
+                }
+            }
+            
+            priorities.put(blockadeID, priority);
+        }
+        
+        return priorities;
+    }
+    
+    /**
+     * 查找从起点到目标的路径，限制最大搜索深度
+     * @param from 起点ID
+     * @param to 终点ID
+     * @param maxDepth 最大搜索深度
+     * @return 如果找到路径则返回路径，否则返回null
+     */
+    private List<EntityID> findPathToTarget(EntityID from, EntityID to, int maxDepth) {
+        this.pathPlanning.setFrom(from);
+        this.pathPlanning.setDestination(to);
+        // 可以设置路径规划的其他参数，如最大深度
+        List<EntityID> path = this.pathPlanning.calc().getResult();
+        
+        // 如果路径太长，超出指定深度，则认为不是直接相关
+        if (path != null && !path.isEmpty() && path.size() <= maxDepth) {
+            return path;
+        }
+        return null;
+    }
+    
+    /**
+     * 检查道路是否在救援路线上
+     */
+    private boolean isOnRescueRoute(EntityID roadID) {
+        Road road = (Road) this.worldInfo.getEntity(roadID);
+        if (road == null) {
+            return false;
+        }
+        
+        // 获取所有救护车和消防车
+        Collection<StandardEntity> rescueAgents = new ArrayList<>();
+        rescueAgents.addAll(this.worldInfo.getEntitiesOfType(StandardEntityURN.AMBULANCE_TEAM));
+        rescueAgents.addAll(this.worldInfo.getEntitiesOfType(StandardEntityURN.FIRE_BRIGADE));
+        
+        // 检查是否有救护车或消防车在该道路上
+        for (StandardEntity agent : rescueAgents) {
+            StandardEntity position = this.worldInfo.getPosition(agent.getID());
+            if (position != null && position.getID().equals(roadID)) {
+                return true;
+            }
+        }
+        
+        // 检查该道路是否连接到有救护车或消防车的道路
+        Collection<EntityID> neighbours = road.getNeighbours();
+        if (neighbours != null) {
+            for (EntityID neighbourID : neighbours) {
+                for (StandardEntity agent : rescueAgents) {
+                    StandardEntity position = this.worldInfo.getPosition(agent.getID());
+                    if (position != null && position.getID().equals(neighbourID)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * 为警察寻找最佳目标
+     * @param police 警察单位
+     * @param sortedBlockades 按优先级排序的阻塞物列表
+     * @return 最佳目标ID，如果没有合适目标则返回null
+     */
+    private EntityID findBestTarget(PoliceForce police, List<EntityID> sortedBlockades) {
+        // 如果没有阻塞物，则返回null
+        if (sortedBlockades.isEmpty()) {
+            return null;
+        }
+        
+        EntityID policePosition = police.getPosition();
+        
+        // 尝试分配尚未分配且可达的最高优先级阻塞物
+        for (EntityID blockadeID : sortedBlockades) {
+            // 如果已分配给其他警察，则跳过
+            if (this.assignedTargets.contains(blockadeID)) {
+                continue;
+            }
+            
+            // 获取阻塞物所在的位置
+            Blockade blockade = (Blockade) this.worldInfo.getEntity(blockadeID);
+            if (blockade == null) {
+                continue;
+            }
+            
+            // 检查是否可以到达该阻塞物
+            EntityID blockadePosition = blockade.getPosition();
+            this.pathPlanning.setFrom(policePosition);
+            this.pathPlanning.setDestination(blockadePosition);
+            List<EntityID> path = this.pathPlanning.calc().getResult();
+            
+            // 如果找到了路径，则选择该阻塞物作为目标
+            if (path != null && !path.isEmpty()) {
+                return blockadeID;
+            }
+        }
+        
+        // 如果没有找到合适的目标，可以考虑分配已经分配给其他人但优先级很高的目标
+    
+        
+        return null;
+    }
 }
+
