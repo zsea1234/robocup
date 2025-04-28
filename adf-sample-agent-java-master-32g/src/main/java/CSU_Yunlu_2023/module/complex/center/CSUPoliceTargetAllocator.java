@@ -94,8 +94,20 @@ public class CSUPoliceTargetAllocator extends PoliceTargetAllocator {
             }
         }
         
-        // 如果没有阻塞物，则不需要分配目标
+        // 如果没有阻塞物，为每个警察分配一个侦察目标
         if (blockades.isEmpty()) {
+            for (StandardEntity entity : policeForces) {
+                PoliceForce police = (PoliceForce) entity;
+                if (police.isBuriednessDefined() && police.getBuriedness() > 0) {
+                    continue;
+                }
+                // 获取警察当前位置
+                EntityID position = police.getPosition();
+                if (position != null) {
+                    // 分配当前位置作为侦察目标
+                    this.result.put(police.getID(), position);
+                }
+            }
             return this;
         }
         
@@ -120,6 +132,12 @@ public class CSUPoliceTargetAllocator extends PoliceTargetAllocator {
             if (bestTarget != null) {
                 this.result.put(police.getID(), bestTarget);
                 this.assignedTargets.add(bestTarget);
+            } else {
+                // 如果没有找到合适的阻塞物目标，分配当前位置作为侦察目标
+                EntityID position = police.getPosition();
+                if (position != null) {
+                    this.result.put(police.getID(), position);
+                }
             }
         }
         

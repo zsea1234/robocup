@@ -50,6 +50,18 @@ public class CommandPickerPolice extends CommandPicker {
                 StandardEntity target = this.worldInfo.getEntity(targetID);
                 
                 if (target != null) {
+                    // 如果目标是警察当前位置，创建侦察命令
+                    if (targetID.getValue() == agentID.getValue()) {
+                        CommandScout command = new CommandScout(
+                                true,
+                                agentID,
+                                targetID,
+                                this.scoutDistance
+                        );
+                        this.messages.add(command);
+                        continue;
+                    }
+                    
                     // 根据目标类型创建不同命令
                     if (target instanceof Area) {
                         // 对于道路等区域，创建常规清障命令
@@ -62,13 +74,12 @@ public class CommandPickerPolice extends CommandPicker {
                         this.messages.add(command);
                     } else if (target instanceof Blockade) {
                         // 对于明确的路障，创建清障命令
-                        // 获取路障所在位置
                         Blockade blockade = (Blockade) target;
                         if (blockade.isPositionDefined()) {
                             CommandPolice command = new CommandPolice(
                                     true,
                                     agentID,
-                                    targetID, // 直接使用路障ID
+                                    targetID,
                                     CommandPolice.ACTION_CLEAR
                             );
                             this.messages.add(command);
@@ -80,11 +91,11 @@ public class CommandPickerPolice extends CommandPicker {
                         CommandPolice command = new CommandPolice(
                                 true,
                                 agentID,
-                                position, // 使用人员位置
+                                position,
                                 CommandPolice.ACTION_CLEAR
                         );
                         this.messages.add(command);
-                    } else if (target.getStandardURN() == StandardEntityURN.REFUGE) {
+                    } else if (target instanceof Refuge) {
                         // 对于避难所，创建休息命令
                         CommandPolice command = new CommandPolice(
                                 true,
