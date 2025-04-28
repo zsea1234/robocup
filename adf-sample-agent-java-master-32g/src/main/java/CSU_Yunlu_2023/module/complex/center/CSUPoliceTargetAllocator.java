@@ -15,6 +15,8 @@ import rescuecore2.standard.entities.PoliceForce;
 import rescuecore2.standard.entities.Road;
 import rescuecore2.standard.entities.StandardEntity;
 import rescuecore2.standard.entities.StandardEntityURN;
+import adf.core.component.communication.CommunicationMessage;
+import adf.core.agent.communication.standard.bundle.information.MessageRoad;
 
 import java.util.*;
 
@@ -38,7 +40,10 @@ public class CSUPoliceTargetAllocator extends PoliceTargetAllocator {
         this.knownBlockades = new ArrayList<>();
         
         // 初始化路径规划组件
-        this.pathPlanning = moduleManager.getModule("TestPoliceTargetAllocator.PathPlanning", "adf.core.sample.module.algorithm.SamplePathPlanning");
+        this.pathPlanning = moduleManager.getModule("CSUPoliceTargetAllocator.PathPlanning", "adf.core.sample.module.algorithm.SamplePathPlanning");
+        if (this.pathPlanning == null) {
+            System.err.println("Failed to initialize path planning module");
+        }
     }
 
     @Override
@@ -48,8 +53,10 @@ public class CSUPoliceTargetAllocator extends PoliceTargetAllocator {
             return this;
         }
         
-        // 可以从precomputeData中恢复一些预计算数据
-        // 例如：this.knownBlockades = ...
+        // 重置状态
+        this.result = new HashMap<>();
+        this.assignedTargets = new HashSet<>();
+        this.knownBlockades = new ArrayList<>();
         
         return this;
     }
@@ -62,14 +69,15 @@ public class CSUPoliceTargetAllocator extends PoliceTargetAllocator {
         }
         
         // 预计算一些数据
-        // 例如：对地图进行分析，识别潜在的关键道路
+        this.result = new HashMap<>();
+        this.assignedTargets = new HashSet<>();
+        this.knownBlockades = new ArrayList<>();
         
         return this;
     }
 
     @Override
     public Map<EntityID, EntityID> getResult() {
-        // 返回计算结果而不是null
         return this.result;
     }
 
@@ -111,7 +119,7 @@ public class CSUPoliceTargetAllocator extends PoliceTargetAllocator {
             return this;
         }
         
-        // 计算每个阻塞物的优先级（可以基于位置、大小等）
+        // 计算每个阻塞物的优先级
         Map<EntityID, Double> blockadePriorities = calculateBlockadePriorities(blockades);
         
         // 根据优先级对阻塞物进行排序
@@ -152,9 +160,41 @@ public class CSUPoliceTargetAllocator extends PoliceTargetAllocator {
         }
         
         // 处理从其他智能体接收的消息
-        // 例如：更新已知的阻塞物列表
-        // messageManager.getReceivedMessageList() ...
+        // Get changes from the world model reflecting message processing
+        // The world model should ideally be updated by the communication system before this module runs.
+        // This logic processes messages directly to update internal state.
         
+        Set<EntityID> newlyReportedBlockades = new HashSet<>(); // Use a set to collect blockades in this cycle
+        for (CommunicationMessage message : messageManager.getReceivedMessageList()) {
+            if (message instanceof MessageRoad) {
+                MessageRoad roadMessage = (MessageRoad) message;
+                
+                // Get the Road EntityID from the message
+                EntityID roadID = roadMessage.getRoadID(); // Assuming this method exists in MessageRoad
+                
+                if (roadID != null) {
+                    StandardEntity entity = this.worldInfo.getEntity(roadID);
+                    if (entity instanceof Road) {
+                        Road road = (Road) entity;
+                        // Now call methods on the Road entity object
+                        if (road.isBlockadesDefined() && !road.getBlockades().isEmpty()) {
+                            newlyReportedBlockades.addAll(road.getBlockades());
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Update the knownBlockades list (consider strategy: replace, append, merge?)
+        // Simple approach: Append new unique blockades
+        for (EntityID blockadeID : newlyReportedBlockades) {
+            if (!this.knownBlockades.contains(blockadeID)) {
+                this.knownBlockades.add(blockadeID);
+            }
+        }
+        // Optional: Clean up knownBlockades (e.g., remove blockades that no longer exist)
+        // This requires more complex state management. For now, just adding.
+
         return this;
     }
     
