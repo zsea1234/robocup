@@ -69,21 +69,20 @@ public class CSUMessageCoordinator extends MessageCoordinator {
                         ambulanceMessages.add(msg);
                         policeMessages.add(msg);
                     }
-
                 } else if (msg instanceof CommandAmbulance) {
                     ambulanceMessages.add(msg);
                 } else if (msg instanceof CommandFire) {
                     fireBrigadeMessages.add(msg);
                 }
                 else if (msg instanceof CommandPolice) {
-                    ambulanceMessages.add(msg);
-                    fireBrigadeMessages.add(msg);
-                    policeMessages.add(msg);
+                    if (agentType == StandardEntityURN.POLICE_OFFICE || agentType == StandardEntityURN.POLICE_FORCE) {
+                        policeMessages.add(msg);
+                    }
                 }
                 else if (msg instanceof CommandScout) {
                     if (agentType == StandardEntityURN.FIRE_STATION) {
                         fireBrigadeMessages.add(msg);
-                    } else if (agentType == StandardEntityURN.POLICE_OFFICE) {
+                    } else if (agentType == StandardEntityURN.POLICE_OFFICE || agentType == StandardEntityURN.POLICE_FORCE) {
                         policeMessages.add(msg);
                     } else if (agentType == StandardEntityURN.AMBULANCE_CENTRE) {
                         ambulanceMessages.add(msg);
@@ -91,7 +90,7 @@ public class CSUMessageCoordinator extends MessageCoordinator {
                 } else if (msg instanceof MessageReport) {
                     if (agentType == StandardEntityURN.FIRE_BRIGADE) {
                         fireBrigadeMessages.add(msg);
-                    } else if (agentType == StandardEntityURN.POLICE_FORCE) {
+                    } else if (agentType == StandardEntityURN.POLICE_FORCE || agentType == StandardEntityURN.POLICE_OFFICE) {
                         policeMessages.add(msg);
                     } else if (agentType == StandardEntityURN.AMBULANCE_TEAM) {
                         ambulanceMessages.add(msg);
